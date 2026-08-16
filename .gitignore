@@ -1,0 +1,20 @@
+# ===== 私有文件（不上传仓库） =====
+memory/
+AI_Research_Agent_Project_Context.md
+CLAUDE.md
+# 详细阶段文档（本地保留，不入库；仓库内的公开日志见 LOG.md）
+docs/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
