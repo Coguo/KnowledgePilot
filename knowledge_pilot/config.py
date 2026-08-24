@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 
-    # 搜索服务商（Phase 0 仅 stub；后续接 Tavily / DuckDuckGo / Brave 在此切换）
+    # 搜索服务商（stub 占位 / tavily 真实搜索）
     search_provider: str = "stub"
+    tavily_api_key: str = ""
 
     @property
     def has_api_key(self) -> bool:

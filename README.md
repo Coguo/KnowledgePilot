@@ -10,7 +10,7 @@
 knowledge_pilot/
 ├── config.py      # 配置（环境变量 / .env，不硬编码密钥）
 ├── llm/           # LLM 客户端封装（openai SDK，默认 DeepSeek，流式 + 工具调用）
-├── search/        # 搜索抽象层（当前 stub；后续可插拔 Tavily / DuckDuckGo / Brave）
+├── search/        # 搜索抽象层（stub 占位 / tavily 真实搜索，可插拔）
 ├── agent/         # 核心：手写 tool-calling 循环，对外发事件流（UI 无关）
 ├── api/           # FastAPI 层：把事件流映射为 SSE
 └── web/           # 前端页面（单个 index.html）
@@ -32,7 +32,9 @@ pip install -e ".[dev]"
 
 ```bash
 copy .env.example .env     # Windows
-# 然后编辑 .env，填入 DEEPSEEK_API_KEY
+# 然后编辑 .env：
+#   DEEPSEEK_API_KEY  ← LLM 密钥（必填）
+#   TAVILY_API_KEY    ← 搜索密钥（SEARCH_PROVIDER=tavily 时必填，注册 https://tavily.com 获取免费 key）
 ```
 
 未配置密钥时也可以启动（界面能打开），但发消息会得到清晰提示，提示你先填密钥。
@@ -55,7 +57,7 @@ pytest
 
 ## 阶段规划（渐进而来）
 
-- ✅ **Phase 0**：基础 Research Chat（本阶段）
+- ✅ **Phase 0**：基础 Research Chat + Tavily 搜索（本阶段）
 - ⬜ Phase 1：RAG（Chunk → Embedding → VectorDB → Retrieval）
 - ⬜ Phase 2：RAG 优化（Hybrid Search / Reranker / Query Rewrite / Evaluation）
 - ⬜ Phase 3：LangGraph Agent 编排

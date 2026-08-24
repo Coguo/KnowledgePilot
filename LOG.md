@@ -27,7 +27,7 @@
 
 - **网页版优先、桌面版后置**：Agent 引擎对外只发事件流、与 UI 完全解耦；网页版把事件映射为 SSE。未来若做桌面版，只需新增一个前端消费同一接口，不返工。
 - **默认 LLM：DeepSeek**（OpenAI 兼容接口，国内直连、成本低）。
-- **搜索服务商暂不定**：先建 `search` 抽象层 + Stub 占位，后续接 Tavily / DuckDuckGo / Brave 只加一个类。
+- **搜索服务商**：先建 `search` 抽象层 + Stub 占位，Phase 0 收尾时接入 **Tavily**（REST API + httpx，只新增一个类就完成插拔）；后续想换 DuckDuckGo / Brave 同理。
 - **手写 tool-calling 循环**，不引 LangChain/LangGraph——Phase 0 的目标就是学透 LLM API / Prompt / Tool Calling / Streaming；到 Phase 3 需要状态编排时再引入 LangGraph。
 
 ### 技术栈
@@ -57,22 +57,23 @@ knowledge_pilot/
 - **配置**：`Settings` 读 `.env` / 环境变量；未配置密钥时给出清晰错误。
 - **LLM 客户端**：封装 `AsyncOpenAI`，`stream_chat` 产出内容增量 + tool_call 增量。
 - **工具**：`search_web` function schema + 执行注册表；执行结果格式化后回填。
+- **Tavily 搜索**：`TavilySearchProvider` 通过 httpx 调 Tavily REST API，返回真实标题/链接/正文摘要；未配置 `TAVILY_API_KEY` 时给出清晰错误。httpx 升级为运行时依赖（Phase 1 抓网页正文也要用）。
 - **Agent 循环**：流式调用 → 累积 tool_calls（参数分片累加）→ 执行工具 → 回填 tool message → 直到无工具调用产出最终答案；`MAX_TOOL_ROUNDS = 4` 轮次上限兜底防死循环。
 - **SSE 事件协议**：`token` / `tool_call` / `tool_result` / `done` 四类帧。
 - **前端**：原生 JS + fetch 流式读取，渲染流式 token 与搜索状态行；无构建工具链。
 
 ### 测试
 
-- 12 个测试全部通过（离线运行）。
-- 覆盖：直接回答 / 先搜索再回答（验证事件序列与 tool message 回填）/ 轮次上限兜底 / 未知工具报错 / SSE 端点冒烟 / 配置默认值与覆盖 / Stub schema。
+- 15 个测试全部通过（离线运行）。
+- 覆盖：直接回答 / 先搜索再回答（验证事件序列与 tool message 回填）/ 轮次上限兜底 / 未知工具报错 / SSE 端点冒烟 / 配置默认值与覆盖 / Stub schema / Tavily 构造校验与响应映射（mock httpx）。
 
 ### 已知问题
 
 - 前端为极简版：无 Markdown 渲染、无多轮上下文、无历史记录（Phase 0 有意裁剪）。
 - LLM 网络异常会中断流，前端仅显示错误文案，无重试。
 - 流式 tool_calls 累加按 OpenAI 兼容格式编写，个别模型分片方式不同可能需微调。
+- Tavily 用 basic 深度（返回正文摘要，非完整原文）；Phase 1 RAG 需要完整正文时会加独立的网页抓取步骤。
 
 ### 下一步
 
-1. 接真实搜索服务商（如 Tavily），让搜索从占位变成真实结果。
-2. 进入 Phase 1：RAG——研究资料动态获取 → 解析 → Chunk → Embedding → 向量库检索，回答问题基于检索资料。
+进入 Phase 1：RAG——研究资料动态获取 → 解析 → Chunk → Embedding → 向量库检索，回答问题基于检索资料并带来源引用。

@@ -46,9 +46,13 @@ def get_chat_deps() -> ChatDeps:
                 "填入密钥后重启服务。"
             ),
         )
+    try:
+        search = create_search_provider(settings.search_provider, settings.tavily_api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
     return ChatDeps(
         llm=ChatClient(settings),
-        search=create_search_provider(settings.search_provider),
+        search=search,
     )
 
 
