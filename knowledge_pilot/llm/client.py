@@ -35,6 +35,12 @@ class LLMClient(Protocol):
     ) -> AsyncIterator[StreamChunk]:
         ...
 
+    async def complete(
+        self, messages: list[dict], *, max_tokens: int | None = None
+    ) -> str:
+        """非流式补全：给定消息返回完整文本（Query Rewrite 等短任务用）。"""
+        ...
+
 
 class ChatClient:
     """OpenAI 兼容 LLM 客户端（默认 DeepSeek）。"""
@@ -80,3 +86,14 @@ class ChatClient:
                         "arguments": tc.function.arguments if tc.function else None,
                     }
                 )
+
+    async def complete(
+        self, messages: list[dict], *, max_tokens: int | None = None
+    ) -> str:
+        """非流式补全：一次返回完整回复（Query Rewrite 等短任务用）。"""
+        resp = await self._client.chat.completions.create(
+            model=self._settings.deepseek_model,
+            messages=messages,
+            max_tokens=max_tokens,
+        )
+        return resp.choices[0].message.content or ""

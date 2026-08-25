@@ -52,12 +52,15 @@ def get_chat_deps() -> ChatDeps:
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
 
+    # 先建 LLM：RAG 开启查询改写时，工厂需要同一个客户端做改写调用。
+    llm = ChatClient(settings)
+
     rag = None
     if settings.rag_enabled:
         try:
             from knowledge_pilot.rag import create_rag_pipeline
 
-            rag = create_rag_pipeline(settings)
+            rag = create_rag_pipeline(settings, llm)
         except ImportError as exc:
             raise HTTPException(
                 status_code=500,
@@ -68,7 +71,7 @@ def get_chat_deps() -> ChatDeps:
             ) from exc
 
     return ChatDeps(
-        llm=ChatClient(settings),
+        llm=llm,
         search=search,
         rag=rag,
     )
@@ -98,6 +101,7 @@ async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> Str
             ):
                 yield _sse_frame(event)
         finally:
+            _close_rag(deps.rag)
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -111,6 +115,13 @@ async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> Str
 
 
 # ---- SSE 帧编码 ------------------------------------------------------
+
+def _close_rag(rag: object | None) -> None:
+    """任务结束清理临时知识库（task_{uuid} collection），幂等。"""
+    close = getattr(rag, "close", None)
+    if close is not None:
+        close()
+
 
 def _sse_frame(event: object) -> str:
     if isinstance(event, TokenEvent):

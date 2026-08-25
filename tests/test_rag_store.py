@@ -54,3 +54,22 @@ async def test_search_top_k_limits(tmp_path):
 
     hits = await store.search(_vec(0), top_k=2)
     assert len(hits) == 2
+
+
+async def test_metadata_round_trip():
+    """文档级元数据（search_score 等）应随 add/search 完整往返，不丢失。"""
+    store = ChromaStore()
+    chunk = _chunk(0, "苹果是水果")
+    chunk.metadata["search_score"] = "0.95"
+    await store.add_chunks([chunk], [_vec(0)])
+
+    hits = await store.search(_vec(0), top_k=1)
+    assert hits[0].chunk.metadata["search_score"] == "0.95"
+    assert hits[0].chunk.metadata["chunk_index"] == "0"
+
+
+def test_delete_collection_idempotent():
+    """任务结束清理临时知识库：delete_collection 幂等，重复调用不报错。"""
+    store = ChromaStore()
+    store.delete_collection()  # 集合不存在也不报错
+    store.delete_collection()

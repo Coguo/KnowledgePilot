@@ -1,0 +1,130 @@
+{
+  "items": [
+    {
+      "query": "RAG 检索增强生成的基本原理是什么",
+      "relevant_doc_ids": ["doc_rag"],
+      "docs": [
+        {
+          "document_id": "doc_rag",
+          "url": "https://example.com/rag",
+          "title": "RAG 原理",
+          "text": "检索增强生成（Retrieval-Augmented Generation，简称 RAG）是近年大语言模型应用的关键技术。\n\nRAG 的基本原理是把检索与生成解耦：模型生成答案之前，先从外部知识库中检索与问题相关的文档片段，把检索结果作为生成上下文注入提示词，再基于上下文作答。这样答案不再只依赖训练时固化的参数知识，而是引用实时检索到的资料，从而显著降低幻觉。\n\n一条典型 RAG 链路分两步：入库链路把文档切分成分块（chunk）并向量化，写入向量数据库；检索链路把用户问题向量化，在向量库做相似度检索，取回最相关的若干分块拼成带来源的上下文。混合检索进一步补足向量盲区，用排名融合兼顾语义与字面。"
+        },
+        {
+          "document_id": "doc_llm",
+          "url": "https://example.com/llm",
+          "title": "大语言模型基础",
+          "text": "大语言模型（LLM）基于 Transformer 架构，通过海量文本预训练学习语言统计规律。核心组件包括多头自注意力机制与前馈网络，注意力机制让每个 token 关注序列中的其他 token，从而建模长距离依赖。\n\n训练分预训练与对齐两阶段：预训练用自回归目标预测下一个 token，对齐阶段用指令微调与人类反馈强化学习让模型更符合人类偏好。推理时模型逐个生成 token，直到产出终止符。"
+        },
+        {
+          "document_id": "doc_embeddings",
+          "url": "https://example.com/embeddings",
+          "title": "文本嵌入",
+          "text": "文本嵌入（embedding）把文字映射到稠密向量空间，语义相近的文本在空间中距离更近。嵌入模型通常用对比学习训练：正样本对（相关文本）拉近、负样本对（无关文本）推远。\n\n常用的中文嵌入模型包括 BGE 系列。向量检索就是在嵌入空间里做最近邻搜索。"
+        },
+        {
+          "document_id": "doc_prompt",
+          "url": "https://example.com/prompt",
+          "title": "提示词工程",
+          "text": "提示词工程（prompt engineering）研究如何编写指令让大语言模型更好地完成特定任务。常见技巧包括给出明确角色、分步要求、few-shot 示例与输出格式约束。\n\n提示词的质量直接影响模型输出的相关性与稳定性，但提示词本身不能给模型带来训练时没有的新知识。"
+        },
+        {
+          "document_id": "doc_finetune",
+          "url": "https://example.com/finetune",
+          "title": "模型微调",
+          "text": "微调（fine-tuning）是在预训练模型基础上，用领域数据继续训练，让模型学会特定任务或风格。相比提示工程，微调能更彻底地改变模型行为，但成本高、周期长，且每次更新都需要重新训练。\n\n实践中常把微调与检索增强结合：微调负责让模型更听话，检索增强负责提供最新知识。"
+        },
+        {
+          "document_id": "doc_tokenizer",
+          "url": "https://example.com/tokenizer",
+          "title": "分词与词表",
+          "text": "分词（tokenization）把文本切成模型可处理的最小单元。常见策略包括 BPE、WordPiece 与 sentencepiece。中文分词还会讨论词与字的选择：基于词的分词需要词典，基于字或子词的方式则免词典。\n\n词表大小直接决定模型参数量与训练效率，是构建语言模型的工程基础。"
+        }
+      ]
+    },
+    {
+      "query": "Python 异步编程中 asyncio 的事件循环是什么",
+      "relevant_doc_ids": ["doc_asyncio"],
+      "docs": [
+        {
+          "document_id": "doc_asyncio",
+          "url": "https://example.com/asyncio",
+          "title": "asyncio 事件循环",
+          "text": "asyncio 是 Python 标准库提供的异步编程框架，核心组件是事件循环（event loop）。\n\n事件循环负责调度协程（coroutine）的执行：它维护一个任务队列，当某个协程 await 一个 I/O 操作时，事件循环把控制权交还给其他可执行任务，等 I/O 就绪后再恢复该协程。这样单线程也能并发处理大量连接，避免线程切换开销。\n\n常用接口包括 asyncio.run 启动事件循环、asyncio.gather 并发等待多个任务、asyncio.Semaphore 控制并发上限。理解事件循环的关键是：协程必须由事件循环驱动，阻塞式调用会卡死整个循环。"
+        },
+        {
+          "document_id": "doc_thread",
+          "url": "https://example.com/thread",
+          "title": "多线程",
+          "text": "多线程编程通过操作系统调度多个执行流，适合 I/O 密集型任务。Python 由于 GIL 的限制，CPU 密集型任务的多线程并行受限，常改用多进程或 C 扩展。\n\n线程间共享内存需要加锁保护，容易产生竞态与死锁；线程切换由内核调度，开销比协程切换更大。"
+        },
+        {
+          "document_id": "doc_process",
+          "url": "https://example.com/process",
+          "title": "多进程",
+          "text": "多进程利用多核 CPU 并行执行，能绕开 GIL 的限制，适合 CPU 密集型计算。进程间通信需要借助管道、队列或共享内存，成本比线程间通信更高。\n\nPython 的 multiprocessing 模块通过把任务序列化派发给子进程来并行。"
+        },
+        {
+          "document_id": "doc_generator",
+          "url": "https://example.com/generator",
+          "title": "生成器与迭代器",
+          "text": "生成器（generator）用 yield 关键字实现惰性求值，每次迭代只产出当前值，适合处理大数据流。迭代器协议要求对象实现 __iter__ 与 __next__。\n\n生成器是协程的底层基础，但生成器本身没有调度器，不能主动切换任务。"
+        },
+        {
+          "document_id": "doc_gil",
+          "url": "https://example.com/gil",
+          "title": "GIL 全局解释器锁",
+          "text": "GIL 是 CPython 解释器的全局锁，同一时刻只允许一个线程执行字节码，因此纯 Python 的多线程无法真正并行利用多核。\n\nIO 密集任务在等待 I/O 时会释放 GIL，所以多线程对 IO 密集仍有效；CPU 密集则建议用多进程。"
+        },
+        {
+          "document_id": "doc_await",
+          "url": "https://example.com/await",
+          "title": "async 语法",
+          "text": "async 与 await 是 Python 编写协程的语法糖：async def 定义协程函数，await 挂起当前协程等待异步结果。await 只能出现在异步函数内部。\n\n相比回调风格，async/await 让异步代码看起来像同步顺序执行，可读性大幅提升，但需要理解它并不代表并行。"
+        }
+      ]
+    },
+    {
+      "query": "BM25 与向量检索各自的优缺点是什么",
+      "relevant_doc_ids": ["doc_bm25"],
+      "docs": [
+        {
+          "document_id": "doc_bm25",
+          "url": "https://example.com/bm25",
+          "title": "BM25 词法检索",
+          "text": "BM25 是基于词频与逆文档频率的经典词法检索算法，属于 OKAPI 家族，广泛用于搜索引擎与 RAG 的关键词路。\n\n它的优点是精确与快速：对于代码标识符、专有名词、论文缩写等字面固定的查询，BM25 能稳定命中；实现简单、无需训练。缺点是难以处理同义词与语义近义表达——换个说法就检索不到。\n\n打分由词频饱和项、文档长度归一化项与 IDF 权重项构成。在混合检索里，BM25 常与向量检索并用，再用排名融合算法合并两路结果，兼顾语义与字面各自的优缺点。"
+        },
+        {
+          "document_id": "doc_vector",
+          "url": "https://example.com/vector",
+          "title": "向量检索",
+          "text": "向量检索把文本编码成稠密向量，在向量空间里用余弦相似度或内积找最近邻，能匹配语义相近而字面不同的表达，弥补关键词检索的同义词短板。\n\n代价是依赖嵌入模型、计算开销更高，且对未见过的新专有名词可能失效。向量数据库提供 HNSW 等 ANN 索引来加速近似最近邻搜索。"
+        },
+        {
+          "document_id": "doc_tfidf",
+          "url": "https://example.com/tfidf",
+          "title": "TF-IDF",
+          "text": "TF-IDF 是统计文本中词的重要程度的经典方法：词频 TF 反映词在文档中的普遍程度，逆文档频率 IDF 反映词的区分度。\n\nTF-IDF 计算简单、可解释性强，但它是词袋模型，不包含词序与语义信息。"
+        },
+        {
+          "document_id": "doc_rerank",
+          "url": "https://example.com/rerank",
+          "title": "重排序",
+          "text": "重排序（rerank）用更强的模型对粗排候选做二次精排：粗排阶段用双塔模型或 BM25 快速筛出 top-N 候选，精排阶段用 CrossEncoder 把查询与每个候选拼成对联合编码，相关性判断更准。\n\n由于每个候选都要单独前向一次，精排只对少量候选进行，是延迟与精度的折中。"
+        },
+        {
+          "document_id": "doc_ann",
+          "url": "https://example.com/ann",
+          "title": "ANN 近似最近邻",
+          "text": "近似最近邻（ANN）索引在大规模向量上做快速检索，常见算法有 HNSW、IVF 与 PQ。它以微小的召回损失换取数量级的检索加速。\n\nHNSW 基于分层图结构，检索时从高层粗导航到底层精搜，是向量数据库的主流索引之一。"
+        },
+        {
+          "document_id": "doc_query",
+          "url": "https://example.com/query",
+          "title": "查询改写",
+          "text": "查询改写（query rewriting）在检索前用模型把原始问题改写成更适合检索的关键词查询，去掉冗余修饰、补充同义术语，以提高召回。\n\n改写可以显著改善对话式提问的检索效果，但会增加一次额外的模型调用延迟与成本，是否值得需用评测数据判断。"
+        }
+      ]
+    }
+  ]
+}

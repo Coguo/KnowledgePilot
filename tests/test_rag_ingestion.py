@@ -83,3 +83,35 @@ async def test_ingest_skips_too_short_text():
 
     assert report.skipped == 1
     assert await store.count() == 0
+
+
+async def test_ingest_feeds_lexical_index():
+    """传入 lexical 时，同一批 chunk 也应喂入词法索引（混合检索用）。"""
+    from tests.fakes import FakeLexicalIndex
+
+    fetcher = StubFetcher(
+        {
+            "https://a.example": FetchedDocument(
+                url="https://a.example", title="A 页面", text="苹果" * 300
+            )
+        }
+    )
+    store = InMemoryVectorStore()
+    lexical = FakeLexicalIndex()
+    results = [_result("A", "https://a.example", None)]
+
+    report = await ingest_from_results(
+        results,
+        fetcher=fetcher,
+        chunker=FixedSizeChunker(),
+        embedder=FakeEmbedder(),
+        store=store,
+        lexical=lexical,
+    )
+
+    assert report.documents == 1
+    assert await store.count() > 0
+    # 词法索引应能检索到刚入库的 chunk（全部 chunk 都含"苹果"）
+    hits = lexical.search("苹果", top_k=5)
+    assert len(hits) == report.chunks
+    assert hits and hits[0].chunk.url == "https://a.example"

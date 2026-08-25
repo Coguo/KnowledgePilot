@@ -8,7 +8,7 @@
 |-------|------|------|----------|
 | 0 | 基础 Research Chat（用户 → LLM → 搜索 → 答案） | ✅ 完成 | 2026-08-16 |
 | 1 | RAG（Chunk → Embedding → VectorDB → Retrieval） | ✅ 完成 | 2026-08-25 |
-| 2 | RAG 优化（Hybrid Search / Reranker / Query Rewrite / Evaluation） | ⬜ 未开始 | - |
+| 2 | RAG 优化（Recursive Chunk / Hybrid / Reranker / Query Rewrite / Evaluation） | ✅ 完成 | 2026-08-25 |
 | 3 | LangGraph Agent 编排 | ⬜ 未开始 | - |
 | 4 | Memory（研究历史 / 用户画像） | ⬜ 未开始 | - |
 | 5 | Knowledge Graph / GraphRAG | ⬜ 未开始 | - |
@@ -124,3 +124,65 @@ knowledge_pilot/
 ### 下一步
 
 进入 Phase 2：RAG 优化——recursive/semantic chunk 对照、BM25 Hybrid Search、Reranker、Query Rewrite、Evaluation Dataset（Recall@K / MRR / Faithfulness）。
+
+---
+
+## Phase 2 — RAG 优化（2026-08-25）
+
+### 项目方向
+
+在 Phase 1 的 fixed-size 向量检索基线上，沿 **Chunk / Retrieval / Rerank / Rewrite** 四个轴各加可插拔优化，并建立**离线评测矩阵**（Recall@K / MRR / Latency / Token Cost）回答"为什么新方案更好"。详细设计见 `docs/phase-2.md`。
+
+### 关键决策
+
+- **RecursiveChunker**（不引 semantic）：按 `\n\n→\n→。！？；，→空格→单字符` 递归切到自然边界再拼回，保留段落/句子语义；overlap 衔接不变量可精确测试。新增 `create_chunker(strategy, ...)` 工厂与 `RAG_CHUNK_STRATEGY`。
+- **BM25 + 手写 CJK 分词**（不引 jieba）：拉丁词整词保留 + 中文双字重叠，零依赖；`rank-bm25` 随 `[rag]` extra。向量抓语义、BM25 抓精确关键词（缩写/标识符），互补。
+- **RRF 融合**（不调权重）：两路分数量纲不同不能直接加，只取排名、k=60 标准常数，双路命中加成，零调参。
+- **CrossEncoder 精排**：bge-reranker-base，query×chunk 联合编码，比双塔粗排更准；只精排候选池（`RAG_RERANK_CANDIDATES=20`），共享单例懒加载。
+- **Query Rewrite 默认关**：用一次 LLM 调用换更好检索，收益未量化前不常开；`LLMClient.complete()` 非流式接口复用 ChatClient。
+- **运行时默认 = 评测推荐组合**：Hybrid ON / Rerank ON / Rewrite OFF / recursive 可选。
+- **评测双模式**：离线（确定性替身，零重依赖，可复现）验证链路与趋势；`--real` 用真实模型出可引用数据。离线组件独立于 `tests/fakes.py`（正确分层）。
+- **顺手修两个 Phase 1 遗留**：`search_score` 元数据丢失（chunker 透传 + store 持久化双修）、`task_{uuid}` collection 泄漏（`RAGPipeline.close()` + api finally 清理）。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| 新增组件 | `rag/lexical.py`（BM25+分词）、`rag/hybrid.py`（RRF）、`rag/reranker.py`（CrossEncoder）、`rag/rewrite.py`（LLM 改写） |
+| 评测 | `rag/eval/`（dataset/metrics/runner/offline/real/__main__ + CLI） |
+| 依赖 | `rank-bm25>=0.2.2`（加入 `[rag]` extra）；rerank 复用已装的 sentence-transformers |
+
+### 实现内容
+
+- `RecursiveChunker` / `create_chunker` / metadata 透传（`chunker.py`）。
+- `Bm25Index`（rank-bm25 懒加载、dirty 重建）+ `tokenize` CJK 分词（`lexical.py`）；ingestion 可选喂入词法索引。
+- `HybridRetriever` RRF 融合 + `format_hits_context` 抽为模块级函数（`hybrid.py`/`retriever.py`）。
+- `CrossEncoderReranker` 共享单例（`reranker.py`）；`LLMQueryRewriter` + `complete()`（`rewrite.py`/`llm/client.py`）。
+- `RAGPipeline` 重接线：ingest(带 BM25) → rewrite → retrieve(候选池) → rerank/截断 → 带来源片段；`close()` 幂等清理（`pipeline.py`）。
+- `create_rag_pipeline(settings, llm)` 按开关装配（`rag/__init__.py`）；`api/main.py` 先建 LLM 再传工厂、finally 里 close。
+- 配置新增 6 个旋钮（`config.py`）+ `.env.example` 文档化。
+- 评测包 + fixture `tests/fixtures/eval/small.json` + CLI（轴过滤 / `--json-out` / `--real`）。
+
+### 测试
+
+- **82 通过 + 6 跳过**（rank-bm25 / chromadb / trafilatura 未装时 `importorskip`）。Phase 2 新增约 49 个：递归分块不变量、CJK 分词、RRF 融合、rerank 懒加载、rewrite 回退、pipeline 混合/精排/改写路径与 close、评测指标数学与 16 行矩阵、Agent 端到端（事件协议仍不变）、api close 清理。
+- 过程中修掉一个真 bug：评测词法索引原为跨 item 共享、`add_chunks` 累积导致结果不可复现 → 改为每 item 独立工厂实例，`test_run_eval_deterministic` 守护可复现性。
+
+### 离线评测结论（small.json，top_k=3，趋势性）
+
+- 基线 fixed/vector/no/original：Recall@3=0.667、MRR=0.500。
+- **Hybrid 补召回**：Recall→1.000、MRR→0.833；**Rerank 提排序**：MRR→1.000。成本为 rerank 约 0.2–0.7ms/item 与少量 token。
+- 改写（离线关键词替身）在 vector+无精排时把 Recall 拉到 1.000 —— 改写价值的第一个迹象，待 `--real` 确认。
+- recursive 与 fixed 在小数据集上几乎无差（需扩数据集或真实模型验证）。
+
+### 已知问题
+
+- CPU rerank 延迟 ~1ms 级；`--real` 需下载 bge-reranker-base ~1.1GB（国内走 HF 镜像）。
+- 离线组件是确定性替身，不等价真实语义质量；评测数据集仅 3 条 query（smoke 级），正式结论需扩充。
+- 改写默认关，收益待 `--real` 数据量化。
+
+### 下一步
+
+- 扩充评测数据集（几十条 query），`--real` 出可引用矩阵。
+- semantic chunk 对照进同一矩阵；知识库检索暴露为独立 tool（`search_knowledge_base`）。
+- 之后进入 Phase 3（LangGraph Agent 编排），`rag/` 各组件已是 Protocol 接缝可直接复用。

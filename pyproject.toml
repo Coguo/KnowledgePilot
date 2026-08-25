@@ -23,10 +23,12 @@ dev = [
 ]
 # Phase 1 RAG：本地 BGE-M3 embedding + Chroma 向量库 + trafilatura 网页正文提取
 # torch 由 sentence-transformers 传递引入，不显式 pin
+# Phase 2：rank-bm25 提供 BM25 词法检索，与向量检索做混合搜索（RRF 融合）
 rag = [
     "trafilatura>=1.6",
     "chromadb>=0.5.0",
     "sentence-transformers>=2.7.0",
+    "rank-bm25>=0.2.2",
 ]
 
 [tool.setuptools.packages.find]

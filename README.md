@@ -5,7 +5,8 @@
 **当前进度**：
 - ✅ **Phase 0：基础 Research Chat**（`用户 → LLM → 搜索 → 流式答案`）
 - ✅ **Phase 1：RAG**（搜索网页动态建库 → 本地 BGE-M3 Embedding → Chroma 向量检索 → 带来源引用作答）
-- ⬜ Phase 2+：RAG 优化 / LangGraph / Memory / Knowledge Graph / MCP / 工程化
+- ✅ **Phase 2：RAG 优化**（Recursive Chunk / BM25+向量 Hybrid / Reranker / Query Rewrite / 离线评测矩阵）
+- ⬜ Phase 3+：LangGraph / Memory / Knowledge Graph / MCP / 工程化
 
 完整规划见 `AI_Research_Agent_Project_Context.md`（已 gitignore，本地保留）。
 
@@ -17,12 +18,14 @@ knowledge_pilot/
 ├── llm/           # LLM 客户端封装（openai SDK，默认 DeepSeek，流式 + 工具调用）
 ├── search/        # 搜索抽象层（stub 占位 / tavily 真实搜索，可插拔）
 ├── agent/         # 核心：手写 tool-calling 循环，对外发事件流（UI 无关）
-├── rag/           # Phase 1：网页抓取 → 分块 → BGE-M3 Embedding → Chroma → 检索
+├── rag/           # RAG：抓取→分块→Embedding→向量库→检索；Phase 2 叠加
+│   │              #   RecursiveChunker / BM25 Hybrid(RRF) / Reranker / QueryRewrite
+│   └── eval/      #   离线评测（Recall@K/MRR/Latency/TokenCost 矩阵 + CLI）
 ├── api/           # FastAPI 层：把事件流映射为 SSE
 └── web/           # 前端页面（单个 index.html）
 ```
 
-> 设计要点：**Agent 引擎与 UI 完全解耦**——它只产出事件流。网页版把事件映射为 SSE；未来做桌面版只需新增一个前端消费同一接口，不返工。RAG 通过 `search_web` 工具内部透明增强接入（自动抓取搜索结果建库并检索），LLM 无需学习新工具，事件协议不变。
+> 设计要点：**Agent 引擎与 UI 完全解耦**——它只产出事件流。网页版把事件映射为 SSE；未来做桌面版只需新增一个前端消费同一接口，不返工。RAG 通过 `search_web` 工具内部透明增强接入（自动抓取搜索结果建库并检索），LLM 无需学习新工具，事件协议不变。Phase 2 的 Hybrid / Reranker / Rewrite 均为可插拔组件（Protocol 接缝 + 配置开关），全部默认按评测推荐组合开启。
 
 ## 快速开始
 
@@ -32,7 +35,7 @@ knowledge_pilot/
 conda activate knowledgepilot
 cd d:\Code\Project\Python\KnowledgePilot
 pip install -e ".[dev]"          # 基础（Phase 0）
-pip install -e ".[dev,rag]"      # 含 RAG（Phase 1，可选，体积较大）
+pip install -e ".[dev,rag]"      # 含 RAG（Phase 1/2，可选，体积较大）
 ```
 
 ### 配置
@@ -44,6 +47,8 @@ copy .env.example .env     # Windows
 #   TAVILY_API_KEY      ← 搜索密钥（SEARCH_PROVIDER=tavily 时必填）
 #   RAG_ENABLED=true     ← 开启 RAG（需先安装 [rag] 依赖；首次会下载约 2GB 的 BGE-M3 模型）
 #   EMBEDDING_CACHE_DIR=data/models   ← 模型缓存目录
+#   RAG_CHUNK_STRATEGY=recursive  RAG_HYBRID_ENABLED=true  RAG_RERANK_ENABLED=true
+#   RAG_QUERY_REWRITE_ENABLED=false   ← Phase 2 默认组合（详见 .env.example）
 #   国内下载模型慢可设置系统环境变量 HF_ENDPOINT=https://hf-mirror.com
 ```
 
@@ -65,13 +70,21 @@ uvicorn knowledge_pilot.api.main:app --reload
 pytest
 ```
 
-**33 通过 + 2 跳过**，全部离线运行（Fake LLM / Fake Embedding / 内存向量库注入，不联网）。未安装 `[rag]` 依赖时，chromadb / trafilatura 相关测试自动跳过（`pytest.importorskip`）。
+**82 通过 + 6 跳过**，全部离线运行（Fake LLM / Fake Embedding / 内存向量库注入，不联网）。未安装 `[rag]` 依赖时，rank-bm25 / chromadb / trafilatura 相关测试自动跳过（`pytest.importorskip`）。
+
+### 离线评测（Phase 2）
+
+```bash
+python -m knowledge_pilot.rag.eval --dataset tests/fixtures/eval/small.json --top-k 3
+```
+
+输出 16 行 Spec 矩阵（chunk × retrieval × rerank × rewrite 全组合）的 Recall@K / MRR / Latency / Token Cost，量化每个优化轴的收益。加 `--real` 换真实模型（BGE-M3 / bge-reranker / DeepSeek 改写）测量真实数据。详见 `docs/phase-2.md`。
 
 ## 阶段规划（渐进而来）
 
 - ✅ **Phase 0**：基础 Research Chat + Tavily 搜索
 - ✅ **Phase 1**：RAG（动态抓取网页 → 分块 → Embedding → 向量检索 → 带来源引用）
-- ⬜ Phase 2：RAG 优化（Hybrid Search / Reranker / Query Rewrite / Evaluation）
+- ✅ **Phase 2**：RAG 优化（Recursive Chunk / Hybrid / Reranker / Query Rewrite / Evaluation）
 - ⬜ Phase 3：LangGraph Agent 编排
 - ⬜ Phase 4：Memory（研究历史）
 - ⬜ Phase 5：Knowledge Graph / GraphRAG

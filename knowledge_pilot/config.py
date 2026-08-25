@@ -34,11 +34,19 @@ class Settings(BaseSettings):
     embedding_cache_dir: str = ""  # 空 → HF 默认缓存；建议 data/models
     embedding_device: str = "cpu"
     chroma_dir: str = "./data/chroma"
+    rag_chunk_strategy: str = "fixed"  # fixed / recursive
     rag_chunk_size: int = 800
     rag_chunk_overlap: int = 200
     rag_top_k: int = 3
     rag_max_fetch_urls: int = 3
     rag_fetch_timeout: float = 15.0
+
+    # RAG Optimization（Phase 2，可选旋钮；全部可插拔，默认开启 Hybrid + Rerank）
+    rag_hybrid_enabled: bool = True  # BM25 + 向量 RRF 混合搜索
+    rag_rerank_enabled: bool = True  # bge-reranker-base CrossEncoder 精排
+    rag_rerank_model: str = "BAAI/bge-reranker-base"
+    rag_rerank_candidates: int = 20  # 精排候选池大小（也作混合检索每路候选数）
+    rag_query_rewrite_enabled: bool = False  # 默认关：每次 search_web 多一次 LLM 调用
 
     @property
     def has_api_key(self) -> bool:

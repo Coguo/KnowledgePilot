@@ -84,6 +84,32 @@ async def test_chat_streams_tool_events():
     assert llm.calls == 2
 
 
+async def test_chat_closes_rag_after_stream():
+    """流结束后 RAGPipeline.close() 被调用（清理 task_{uuid} 临时知识库）。"""
+    closed = []
+
+    class _FakeRag:
+        def close(self):
+            closed.append(True)
+
+    llm = FakeChatClient(script=[(["接口测试回答。"], [])])
+    app.dependency_overrides[get_chat_deps] = lambda: ChatDeps(
+        llm=llm, search=StubSearchProvider(), rag=_FakeRag()
+    )
+    try:
+        async with await _client() as client:
+            async with client.stream(
+                "POST", "/api/chat", json={"message": "你好"}
+            ) as resp:
+                assert resp.status_code == 200
+                async for line in resp.aiter_lines():
+                    pass
+    finally:
+        app.dependency_overrides.clear()
+
+    assert closed == [True]
+
+
 async def test_chat_requires_api_key(monkeypatch):
     """未配置密钥时返回清晰错误，而不是神秘的 500。"""
     monkeypatch.setattr(api_main.settings, "deepseek_api_key", "")

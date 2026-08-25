@@ -78,6 +78,13 @@ class ChromaStore:
             embeddings=embeddings,
             metadatas=[
                 {
+                    # 文档级元数据（search_score 等）一并持久化，检索后可还原；
+                    # 显式键放最后，覆盖任何同名冲突。
+                    **{
+                        k: v
+                        for k, v in c.metadata.items()
+                        if isinstance(v, (str, int, float, bool))
+                    },
                     "document_id": c.document_id,
                     "source": c.source,
                     "url": c.url,
@@ -128,9 +135,11 @@ class ChromaStore:
                         url=meta.get("url", ""),
                         title=meta.get("title", ""),
                         text=(res.get("documents") or [[]])[0][i] or "",
+                        # 还原全部持久化元数据（search_score / chunk_index / chunk_total）
                         metadata={
-                            "chunk_index": meta.get("chunk_index", ""),
-                            "chunk_total": meta.get("chunk_total", ""),
+                            k: v
+                            for k, v in meta.items()
+                            if k not in {"document_id", "source", "url", "title"}
                         },
                     ),
                     score=1.0 - (res.get("distances") or [[0.0]])[0][i],
@@ -140,3 +149,14 @@ class ChromaStore:
 
     async def count(self) -> int:
         return await asyncio.to_thread(self._collection.count)
+
+    def delete_collection(self) -> None:
+        """删除当前 collection（幂等）：用于任务结束清理临时知识库。
+
+        同步调用即可（清理发生在请求收尾，不阻塞关键路径）。
+        """
+        try:
+            self._client.delete_collection(name=self._collection.name)
+        except Exception:
+            # collection 可能已被删除（幂等清理，不因删除失败而报错）
+            pass

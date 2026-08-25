@@ -12,6 +12,7 @@ from knowledge_pilot.rag.chunker import Chunker
 from knowledge_pilot.rag.documents import Document, make_document_id
 from knowledge_pilot.rag.embedder import Embedder
 from knowledge_pilot.rag.fetcher import PageFetcher
+from knowledge_pilot.rag.lexical import LexicalIndex
 from knowledge_pilot.rag.store import VectorStore
 from knowledge_pilot.search.base import SearchResult
 
@@ -29,8 +30,12 @@ async def ingest_documents(
     chunker: Chunker,
     embedder: Embedder,
     store: VectorStore,
+    lexical: LexicalIndex | None = None,
 ) -> IngestReport:
-    """对文档分块 → 一次性批量 embedding → 入向量库。"""
+    """对文档分块 → 一次性批量 embedding → 入向量库。
+
+    `lexical` 可选：传入时同一批 chunk 也喂入词法索引（BM25），供混合检索。
+    """
     chunks: list = []
     accepted = 0
     skipped = 0
@@ -45,6 +50,8 @@ async def ingest_documents(
     if not chunks:
         return IngestReport(documents=0, chunks=0, skipped=skipped)
 
+    if lexical is not None:
+        lexical.add_chunks(chunks)
     embeddings = await asyncio.to_thread(embedder.embed, [c.text for c in chunks])
     await store.add_chunks(chunks, embeddings)
     return IngestReport(documents=accepted, chunks=len(chunks), skipped=skipped)
@@ -57,6 +64,7 @@ async def ingest_from_results(
     chunker: Chunker,
     embedder: Embedder,
     store: VectorStore,
+    lexical: LexicalIndex | None = None,
     max_urls: int = 3,
     min_text_len: int = 100,
 ) -> IngestReport:
@@ -89,7 +97,7 @@ async def ingest_from_results(
         )
 
     report = await ingest_documents(
-        docs, chunker=chunker, embedder=embedder, store=store
+        docs, chunker=chunker, embedder=embedder, store=store, lexical=lexical
     )
     report.skipped += skipped
     return report

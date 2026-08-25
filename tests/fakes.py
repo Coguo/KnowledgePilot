@@ -23,6 +23,12 @@ class FakeChatClient:
         self.calls = 0
         self.seen_messages: list[list[dict]] = []
         self.seen_tools: list[list[dict]] = []
+        # 非流式补全的返回内容（Query Rewrite 测试用；默认空串）
+        self.complete_output = ""
+
+    async def complete(self, messages, *, max_tokens=None):
+        self.seen_messages.append(list(messages))
+        return self.complete_output
 
     async def stream_chat(self, messages, tools=None):
         # 存副本：调用方后续还会往同一个 list 追加消息，不能存引用。
@@ -110,6 +116,46 @@ class InMemoryVectorStore:
 
     def all_chunks(self) -> list[Chunk]:
         return [chunk for chunk, _ in self._items]
+
+
+class FakeLexicalIndex:
+    """实现 LexicalIndex Protocol：按查询词在 chunk 文本中的出现次数打分。
+
+    确定性、无依赖，用于混合检索（RRF）的离线测试与评测。
+    """
+
+    def __init__(self):
+        self._chunks: list[Chunk] = []
+
+    def add_chunks(self, chunks: list[Chunk]) -> None:
+        self._chunks.extend(chunks)
+
+    def search(self, query: str, top_k: int) -> list[SearchHit]:
+        q = query.lower()
+        if not q:
+            return []
+        scored = [(c.text.lower().count(q), c) for c in self._chunks]
+        scored = [(s, c) for s, c in scored if s > 0]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [SearchHit(chunk=c, score=float(s)) for s, c in scored[:top_k]]
+
+
+class FakeReranker:
+    """实现 Reranker Protocol：按查询词在 chunk 文本中的出现次数精排。
+
+    确定性、无依赖；与 FakeLexicalIndex 口径一致，方便混合 + 精排的离线测试。
+    """
+
+    def __init__(self):
+        self.calls: list[int] = []  # 每次精排收到的候选数
+
+    def rerank(self, query: str, hits: list[SearchHit], *, top_k: int) -> list[SearchHit]:
+        self.calls.append(len(hits))
+        q = query.lower()
+        ranked = sorted(
+            hits, key=lambda h: h.chunk.text.lower().count(q), reverse=True
+        )
+        return ranked[:top_k]
 
 
 class StubFetcher:
