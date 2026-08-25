@@ -25,3 +25,25 @@ def test_env_overrides(monkeypatch):
     assert s.deepseek_model == "deepseek-reasoner"
     assert s.app_port == 9000
     assert s.has_api_key is True
+
+
+def test_rag_defaults_without_env():
+    s = Settings(_env_file=None)
+    assert s.rag_enabled is False
+    assert s.embedding_model == "BAAI/bge-m3"
+    assert s.chroma_dir == "./data/chroma"
+    assert s.rag_chunk_size == 800
+    assert s.rag_chunk_overlap == 200
+    assert s.rag_top_k == 3
+    assert s.rag_max_fetch_urls == 3
+
+
+def test_rag_env_overrides(monkeypatch):
+    monkeypatch.setenv("RAG_ENABLED", "true")
+    monkeypatch.setenv("RAG_TOP_K", "5")
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+
+    s = Settings(_env_file=None)
+    assert s.rag_enabled is True
+    assert s.rag_top_k == 5
+    assert s.embedding_model == "BAAI/bge-small-zh-v1.5"

@@ -29,11 +29,27 @@ SEARCH_WEB_TOOL = {
 ALL_TOOLS = [SEARCH_WEB_TOOL]
 
 
-async def run_tool(name: str, arguments: dict, *, search: SearchProvider) -> str:
-    """执行工具，返回给 LLM 的文本结果（作为 tool message 回填）。"""
+async def run_tool(
+    name: str,
+    arguments: dict,
+    *,
+    search: SearchProvider,
+    rag: "RAGPipeline | None" = None,  # 字符串前向引用，避免 import rag 重依赖
+) -> str:
+    """执行工具，返回给 LLM 的文本结果（作为 tool message 回填）。
+
+    rag 传入时，search_web 执行后自动抓取结果建库并做向量检索，
+    把带来源片段追加进返回文本（RAG 对 LLM 透明）。
+    """
     if name == "search_web":
-        results = await search.search(arguments["query"])
-        return _format_search_results(results)
+        query = arguments["query"]
+        results = await search.search(query)
+        base = _format_search_results(results)
+        if rag is not None:
+            extra = await rag.enrich_search(query, results)
+            if extra:
+                base = f"{base}\n\n{extra}"
+        return base
     raise ValueError(f"未知工具: {name!r}")
 
 

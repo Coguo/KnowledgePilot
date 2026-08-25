@@ -7,7 +7,7 @@
 | Phase | 内容 | 状态 | 完成日期 |
 |-------|------|------|----------|
 | 0 | 基础 Research Chat（用户 → LLM → 搜索 → 答案） | ✅ 完成 | 2026-08-16 |
-| 1 | RAG（Chunk → Embedding → VectorDB → Retrieval） | ⬜ 未开始 | - |
+| 1 | RAG（Chunk → Embedding → VectorDB → Retrieval） | ✅ 完成 | 2026-08-25 |
 | 2 | RAG 优化（Hybrid Search / Reranker / Query Rewrite / Evaluation） | ⬜ 未开始 | - |
 | 3 | LangGraph Agent 编排 | ⬜ 未开始 | - |
 | 4 | Memory（研究历史 / 用户画像） | ⬜ 未开始 | - |
@@ -77,3 +77,50 @@ knowledge_pilot/
 ### 下一步
 
 进入 Phase 1：RAG——研究资料动态获取 → 解析 → Chunk → Embedding → 向量库检索，回答问题基于检索资料并带来源引用。
+
+---
+
+## Phase 1 — RAG（2026-08-25）
+
+### 项目方向
+
+把「搜索到的网页动态建库 → 向量检索 → 带来源引用作答」接进现有 Agent，数据随研究任务动态获取（不依赖预置 PDF）。详细设计见 `docs/phase-1.md`。
+
+### 关键决策
+
+- **Embedding：本地 BGE-M3**（用户选型；sentence-transformers 加载，懒加载 + 进程级单例）。首次使用下载约 2GB 模型，国内需 `HF_ENDPOINT=https://hf-mirror.com`。
+- **向量库：Chroma**（免费嵌入式；persist_dir 空→内存 EphemeralClient 离线测试，非空→PersistentClient）。每研究任务独立 collection `task_{uuid}`。
+- **网页正文：trafilatura**（正文提取开箱即用，不选 bs4）；httpx 抓取，失败回退 `SearchResult.content`（Tavily 摘要）。
+- **Agent 接入：search_web 工具内部透明增强**——执行后自动「抓取→chunk→embed→存库→检索」，把【知识库检索结果】拼进 tool message。不改事件协议、不改 `ALL_TOOLS`、`rag=None` 时与 Phase 0 逐字节一致、现有测试零改动。
+- **重依赖懒加载 + `[rag]` extra**：`RAG_ENABLED=false` 默认关，未启用时应用照常启动；`pip install -e ".[dev,rag]"` 安装。
+- **chunk 策略**：fixed-size 800 / overlap 200（Phase 2 再做 recursive/semantic 对照实验）。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| RAG 模块 | `knowledge_pilot/rag/`（documents/chunker/embedder/fetcher/store/retriever/ingestion/pipeline + `create_rag_pipeline` 工厂） |
+| Embedding | 本地 BGE-M3（sentence-transformers，CPU） |
+| 向量库 | chromadb（EphemeralClient / PersistentClient，cosine） |
+| 抓取/解析 | httpx + trafilatura |
+
+### 实现内容
+
+- `search_web` 工具执行后自动建库并检索，回答带【知识库检索结果】与来源（标题 + URL）。
+- 配置新增 `RAG_ENABLED` / `EMBEDDING_*` / `CHROMA_DIR` / `RAG_*` 等字段；`.env.example`、`.gitignore`（`data/`）、`pyproject.toml`（`[rag]` extra）同步更新。
+- 未启用 RAG 或未安装 `[rag]` extra 时，应用照常启动（`get_chat_deps` 捕获 ImportError → 清晰 HTTPException）。
+
+### 测试
+
+- 33 通过 + 2 跳过（chromadb / trafilatura 未安装时自动跳过，`importorskip` 兜底）。
+- 全离线：FakeEmbedder / InMemoryVectorStore / StubFetcher（`tests/fakes.py`）；覆盖分块 / 懒加载 / 抓取 / 入库 / 检索 / Agent×RAG 集成 / 配置。
+
+### 已知问题
+
+- 首次模型加载慢、CPU embedding 慢；首次下载 2GB 模型。
+- torch / chromadb 依赖体积大；`data/chroma` 的 `task_{uuid}` collection 不清理会缓慢增长。
+- 检索片段拼入 tool message 增大 token 消耗（top_k=3 + 每段 600 字符，约 +1500-2000 token）。
+
+### 下一步
+
+进入 Phase 2：RAG 优化——recursive/semantic chunk 对照、BM25 Hybrid Search、Reranker、Query Rewrite、Evaluation Dataset（Recall@K / MRR / Faithfulness）。

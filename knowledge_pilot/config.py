@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     search_provider: str = "stub"
     tavily_api_key: str = ""
 
+    # RAG（Phase 1，可选；重依赖懒加载，未启用时应用照常启动）
+    rag_enabled: bool = False  # 默认关：避免首次使用无预警下载约 2GB 模型
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_cache_dir: str = ""  # 空 → HF 默认缓存；建议 data/models
+    embedding_device: str = "cpu"
+    chroma_dir: str = "./data/chroma"
+    rag_chunk_size: int = 800
+    rag_chunk_overlap: int = 200
+    rag_top_k: int = 3
+    rag_max_fetch_urls: int = 3
+    rag_fetch_timeout: float = 15.0
+
     @property
     def has_api_key(self) -> bool:
         """是否已配置 LLM 密钥。"""

@@ -34,10 +34,11 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 class ChatDeps:
     llm: LLMClient
     search: SearchProvider
+    rag: object | None = None  # RAGPipeline，未启用/未安装时为 None
 
 
 def get_chat_deps() -> ChatDeps:
-    """组装本次请求的 LLM 与搜索依赖。未配置密钥时给出清晰错误。"""
+    """组装本次请求的 LLM、搜索与 RAG 依赖。未配置密钥时给出清晰错误。"""
     if not settings.has_api_key:
         raise HTTPException(
             status_code=500,
@@ -50,9 +51,26 @@ def get_chat_deps() -> ChatDeps:
         search = create_search_provider(settings.search_provider, settings.tavily_api_key)
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from None
+
+    rag = None
+    if settings.rag_enabled:
+        try:
+            from knowledge_pilot.rag import create_rag_pipeline
+
+            rag = create_rag_pipeline(settings)
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "RAG 已启用但缺少依赖：请先运行 "
+                    "pip install -e \".[rag]\" 后重启服务。"
+                ),
+            ) from exc
+
     return ChatDeps(
         llm=ChatClient(settings),
         search=search,
+        rag=rag,
     )
 
 
@@ -75,7 +93,9 @@ async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> Str
 
     async def event_stream():
         try:
-            async for event in run_research(req.message, llm=deps.llm, search=deps.search):
+            async for event in run_research(
+                req.message, llm=deps.llm, search=deps.search, rag=deps.rag
+            ):
                 yield _sse_frame(event)
         finally:
             yield "data: [DONE]\n\n"

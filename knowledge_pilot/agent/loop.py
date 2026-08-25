@@ -35,6 +35,7 @@ async def run_research(
     *,
     llm: LLMClient,
     search: SearchProvider,
+    rag: object | None = None,  # RAGPipeline，透传给工具；None 时行为与 Phase 0 一致
 ) -> AsyncIterator[object]:
     """运行一次研究会话，产出事件流（TokenEvent / ToolCallEvent / ToolResultEvent / DoneEvent）。"""
     messages: list[dict] = [
@@ -85,7 +86,7 @@ async def run_research(
             arguments = json.loads(arguments_text or "{}")
 
             yield ToolCallEvent(name=name, arguments=arguments_text)
-            result = await run_tool(name, arguments, search=search)
+            result = await run_tool(name, arguments, search=search, rag=rag)
             yield ToolResultEvent(name=name, summary=_summarize(result))
 
             messages.append(
