@@ -38,6 +38,12 @@ def test_rag_defaults_without_env():
     assert s.rag_max_fetch_urls == 3
 
 
+def test_agent_defaults_without_env():
+    s = Settings(_env_file=None)
+    assert s.agent_mode == "graph"
+    assert s.agent_max_iterations == 3
+
+
 def test_rag_env_overrides(monkeypatch):
     monkeypatch.setenv("RAG_ENABLED", "true")
     monkeypatch.setenv("RAG_TOP_K", "5")

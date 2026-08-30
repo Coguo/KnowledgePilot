@@ -5,6 +5,8 @@
     settings.deepseek_api_key  # 空字符串表示未配置
 """
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +42,11 @@ class Settings(BaseSettings):
     rag_top_k: int = 3
     rag_max_fetch_urls: int = 3
     rag_fetch_timeout: float = 15.0
+
+    # Agent 编排（Phase 3）
+    # agent_mode: graph（LangGraph：拆解→研究→评估→综合报告） / loop（Phase 0-2 单轮工具循环）
+    agent_mode: Literal["graph", "loop"] = "graph"
+    agent_max_iterations: int = 3  # 研究-评估条件循环上限（防死循环）
 
     # RAG Optimization（Phase 2，可选旋钮；全部可插拔，默认开启 Hybrid + Rerank）
     rag_hybrid_enabled: bool = True  # BM25 + 向量 RRF 混合搜索

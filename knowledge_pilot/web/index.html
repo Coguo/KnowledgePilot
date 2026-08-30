@@ -38,7 +38,7 @@
 </head>
 <body>
   <h1>🧭 KnowledgePilot · Research Chat</h1>
-  <p class="subtitle">Phase 0 · 基础 Research Chat（用户 → LLM → 搜索 → 答案，流式）</p>
+  <p class="subtitle">Phase 3 · LangGraph 研究编排（拆解 → 多轮研究 → 评估充分性 → 报告）</p>
 
   <div id="log"></div>
 
@@ -110,6 +110,29 @@
       case 'token':
         assistantEl.querySelector('.content').textContent += evt.content;
         break;
+      case 'plan': {
+        const el = document.createElement('div');
+        el.className = 'tool-status';
+        const steps = (evt.plan || []).map(s => s.question || s.goal).filter(Boolean);
+        el.textContent = '📋 研究计划：' + steps.join(' → ');
+        assistantEl.querySelector('.tools').appendChild(el);
+        break;
+      }
+      case 'status': {
+        const el = document.createElement('div');
+        el.className = 'tool-status';
+        el.textContent = evt.message;
+        assistantEl.querySelector('.tools').appendChild(el);
+        break;
+      }
+      case 'eval': {
+        const el = document.createElement('div');
+        el.className = 'tool-status';
+        const mark = evt.sufficient ? '✅ 信息已充分' : '🔁 信息不足，继续研究';
+        el.textContent = `第 ${evt.iteration} 轮评估：${mark} — ${evt.reason}`;
+        assistantEl.querySelector('.tools').appendChild(el);
+        break;
+      }
       case 'tool_call': {
         let query = evt.arguments;
         try { query = JSON.parse(evt.arguments).query ?? evt.arguments; } catch {}

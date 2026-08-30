@@ -14,8 +14,15 @@ from knowledge_pilot.search.stub import StubSearchProvider
 from tests.fakes import FakeChatClient
 
 
-def _override_deps(script=None):
+def _override_deps(script=None, *, mode="loop"):
+    """覆盖依赖并显式指定 agent_mode（默认 loop：这些是 Phase 0-2 循环行为测试）。"""
     llm = FakeChatClient(script=script or [(["接口测试回答。"], [])])
+    if mode == "graph":
+        llm.complete_script = [
+            '{"steps": [{"title": "A", "question": "子问题A", "purpose": "p"}]}',
+            '{"sufficient": true, "reason": "够", "gap": ""}',
+            "# 报告",
+        ]
     app.dependency_overrides[get_chat_deps] = lambda: ChatDeps(
         llm=llm, search=StubSearchProvider()
     )
@@ -33,7 +40,8 @@ async def test_index_served():
     assert "Research Chat" in resp.text
 
 
-async def test_chat_streams_events():
+async def test_chat_streams_events(monkeypatch):
+    monkeypatch.setattr(api_main.settings, "agent_mode", "loop")
     _override_deps()
     try:
         async with await _client() as client:
@@ -60,7 +68,8 @@ async def test_chat_streams_events():
     assert "接口测试回答" in content
 
 
-async def test_chat_streams_tool_events():
+async def test_chat_streams_tool_events(monkeypatch):
+    monkeypatch.setattr(api_main.settings, "agent_mode", "loop")
     llm = _override_deps(script=[
         ([], [{"name": "search_web", "arguments": '{"query": "测试"}'}]),
         (["基于搜索的答案。"], []),
@@ -84,8 +93,9 @@ async def test_chat_streams_tool_events():
     assert llm.calls == 2
 
 
-async def test_chat_closes_rag_after_stream():
+async def test_chat_closes_rag_after_stream(monkeypatch):
     """流结束后 RAGPipeline.close() 被调用（清理 task_{uuid} 临时知识库）。"""
+    monkeypatch.setattr(api_main.settings, "agent_mode", "loop")
     closed = []
 
     class _FakeRag:
@@ -117,3 +127,32 @@ async def test_chat_requires_api_key(monkeypatch):
         resp = await client.post("/api/chat", json={"message": "hi"})
     assert resp.status_code == 500
     assert "DEEPSEEK_API_KEY" in resp.json()["detail"]
+
+
+async def test_chat_graph_mode_streams_plan_eval_done(monkeypatch):
+    """默认 graph 模式：SSE 帧含 plan / eval / done（LangGraph 编排路径）。"""
+    monkeypatch.setattr(api_main.settings, "agent_mode", "graph")
+    llm = _override_deps(mode="graph")
+    try:
+        async with await _client() as client:
+            async with client.stream(
+                "POST", "/api/chat", json={"message": "研究 RAG chunking"}
+            ) as resp:
+                assert resp.status_code == 200
+                frames = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        frames.append("[DONE]" if data == "[DONE]" else json.loads(data))
+    finally:
+        app.dependency_overrides.clear()
+
+    assert frames[-1] == "[DONE]"
+    types = [f["type"] for f in frames[:-1]]
+    assert "plan" in types
+    assert "eval" in types
+    assert types[-1] == "done"
+    # 综合报告作为 done 帧内容
+    assert frames[-2]["content"] == "# 报告"
+    # planner + evaluate + synthesize = 3 次非流式调用
+    assert llm.complete_calls == 3

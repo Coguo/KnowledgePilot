@@ -5,7 +5,7 @@
 """
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from knowledge_pilot.agent.events import (
     DoneEvent,
@@ -15,7 +15,7 @@ from knowledge_pilot.agent.events import (
 )
 from knowledge_pilot.agent.tools import ALL_TOOLS, run_tool
 from knowledge_pilot.llm.client import LLMClient
-from knowledge_pilot.search.base import SearchProvider
+from knowledge_pilot.search.base import SearchProvider, SearchResult
 
 # 工具调用轮次上限：防止模型陷入无限调用工具的循环（Phase 0 简单兜底）。
 MAX_TOOL_ROUNDS = 4
@@ -36,10 +36,16 @@ async def run_research(
     llm: LLMClient,
     search: SearchProvider,
     rag: object | None = None,  # RAGPipeline，透传给工具；None 时行为与 Phase 0 一致
+    on_search_results: Callable[[list[SearchResult]], None] | None = None,
+    system_prompt: str | None = None,
 ) -> AsyncIterator[object]:
-    """运行一次研究会话，产出事件流（TokenEvent / ToolCallEvent / ToolResultEvent / DoneEvent）。"""
+    """运行一次研究会话，产出事件流（TokenEvent / ToolCallEvent / ToolResultEvent / DoneEvent）。
+
+    on_search_results：每次 search_web 拿到结构化搜索结果后回调（Phase 3 图节点采证用，
+    默认 None 行为不变）。system_prompt：覆盖默认系统提示词（研究节点用研究导向提示）。
+    """
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         {"role": "user", "content": query},
     ]
 
@@ -86,7 +92,13 @@ async def run_research(
             arguments = json.loads(arguments_text or "{}")
 
             yield ToolCallEvent(name=name, arguments=arguments_text)
-            result = await run_tool(name, arguments, search=search, rag=rag)
+            result = await run_tool(
+                name,
+                arguments,
+                search=search,
+                rag=rag,
+                on_search_results=on_search_results,
+            )
             yield ToolResultEvent(name=name, summary=_summarize(result))
 
             messages.append(

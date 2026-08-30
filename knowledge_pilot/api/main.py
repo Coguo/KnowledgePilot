@@ -14,11 +14,15 @@ from pydantic import BaseModel
 
 from knowledge_pilot.agent.events import (
     DoneEvent,
+    EvalEvent,
+    PlanEvent,
+    StatusEvent,
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
 from knowledge_pilot.agent.loop import run_research
+from knowledge_pilot.agent.graph import run_research_graph
 from knowledge_pilot.config import settings
 from knowledge_pilot.llm.client import ChatClient, LLMClient
 from knowledge_pilot.search import SearchProvider, create_search_provider
@@ -96,9 +100,20 @@ async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> Str
 
     async def event_stream():
         try:
-            async for event in run_research(
-                req.message, llm=deps.llm, search=deps.search, rag=deps.rag
-            ):
+            # Phase 3 默认 graph（LangGraph 编排）；loop 为 Phase 0-2 单轮工具循环（回归对比）。
+            if settings.agent_mode == "graph":
+                runner = run_research_graph(
+                    req.message,
+                    llm=deps.llm,
+                    search=deps.search,
+                    rag=deps.rag,
+                    max_iterations=settings.agent_max_iterations,
+                )
+            else:
+                runner = run_research(
+                    req.message, llm=deps.llm, search=deps.search, rag=deps.rag
+                )
+            async for event in runner:
                 yield _sse_frame(event)
         finally:
             _close_rag(deps.rag)
@@ -132,6 +147,17 @@ def _sse_frame(event: object) -> str:
         payload = {"type": "tool_result", "summary": event.summary}
     elif isinstance(event, DoneEvent):
         payload = {"type": "done", "content": event.content}
+    elif isinstance(event, PlanEvent):
+        payload = {"type": "plan", "plan": event.plan}
+    elif isinstance(event, StatusEvent):
+        payload = {"type": "status", "message": event.message}
+    elif isinstance(event, EvalEvent):
+        payload = {
+            "type": "eval",
+            "sufficient": event.sufficient,
+            "reason": event.reason,
+            "iteration": event.iteration,
+        }
     else:
         raise TypeError(f"未知事件类型: {event!r}")
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

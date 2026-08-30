@@ -3,6 +3,8 @@
 新增工具三步：定义 schema → 写执行函数 → 挂到 ALL_TOOLS / run_tool。
 """
 
+from collections.abc import Callable
+
 from knowledge_pilot.search.base import SearchProvider, SearchResult
 
 SEARCH_WEB_TOOL = {
@@ -35,15 +37,20 @@ async def run_tool(
     *,
     search: SearchProvider,
     rag: "RAGPipeline | None" = None,  # 字符串前向引用，避免 import rag 重依赖
+    on_search_results: "Callable[[list[SearchResult]], None] | None" = None,
 ) -> str:
     """执行工具，返回给 LLM 的文本结果（作为 tool message 回填）。
 
     rag 传入时，search_web 执行后自动抓取结果建库并做向量检索，
     把带来源片段追加进返回文本（RAG 对 LLM 透明）。
+    on_search_results 传入时，在格式化前把原始结构化 SearchResult 交给上层
+    （Phase 3 图节点用它采集证据；默认 None 时行为不变）。
     """
     if name == "search_web":
         query = arguments["query"]
         results = await search.search(query)
+        if on_search_results is not None:
+            on_search_results(results)
         base = _format_search_results(results)
         if rag is not None:
             extra = await rag.enrich_search(query, results)

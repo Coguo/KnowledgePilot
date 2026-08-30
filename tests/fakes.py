@@ -25,9 +25,19 @@ class FakeChatClient:
         self.seen_tools: list[list[dict]] = []
         # 非流式补全的返回内容（Query Rewrite 测试用；默认空串）
         self.complete_output = ""
+        # Phase 3 graph 测试：按调用顺序返回（空则回退 complete_output）；
+        # 越界重复最后一条，覆盖 evaluate 多轮判定。
+        self.complete_script: list[str] = []
+        self.complete_calls = 0
+        self.seen_response_formats: list = []
 
-    async def complete(self, messages, *, max_tokens=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None):
         self.seen_messages.append(list(messages))
+        self.seen_response_formats.append(response_format)
+        if self.complete_script:
+            idx = min(self.complete_calls, len(self.complete_script) - 1)
+            self.complete_calls += 1
+            return self.complete_script[idx]
         return self.complete_output
 
     async def stream_chat(self, messages, tools=None):

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/12566/.engramory/**)",
+      "Read(//c/Users/12566/.engramory/User/**)"
+    ]
+  }
+}

@@ -35,3 +35,29 @@ class DoneEvent:
     """一次会话结束，携带最终完整答案。"""
 
     content: str
+
+
+# ---- Phase 3（LangGraph 编排）新增事件 ----------------------------------
+
+
+@dataclass
+class PlanEvent:
+    """Planner 节点生成的研究计划（步骤列表，每项含 title/question/purpose）。"""
+
+    plan: list[dict]
+
+
+@dataclass
+class StatusEvent:
+    """研究流程的阶段切换/进度提示（如「第 2 轮研究」）。"""
+
+    message: str
+
+
+@dataclass
+class EvalEvent:
+    """Evaluate 节点对「信息是否充分」的判定结果。"""
+
+    sufficient: bool
+    reason: str
+    iteration: int

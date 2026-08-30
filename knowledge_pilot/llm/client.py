@@ -36,9 +36,16 @@ class LLMClient(Protocol):
         ...
 
     async def complete(
-        self, messages: list[dict], *, max_tokens: int | None = None
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int | None = None,
+        response_format: dict | None = None,
     ) -> str:
-        """非流式补全：给定消息返回完整文本（Query Rewrite 等短任务用）。"""
+        """非流式补全：给定消息返回完整文本（Query Rewrite / Planner / Evaluate 用）。
+
+        response_format 透传给 OpenAI 兼容接口（如 {"type": "json_object"}）。
+        """
         ...
 
 
@@ -88,12 +95,17 @@ class ChatClient:
                 )
 
     async def complete(
-        self, messages: list[dict], *, max_tokens: int | None = None
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int | None = None,
+        response_format: dict | None = None,
     ) -> str:
-        """非流式补全：一次返回完整回复（Query Rewrite 等短任务用）。"""
+        """非流式补全：一次返回完整回复（Query Rewrite / Planner / Evaluate 等短任务用）。"""
         resp = await self._client.chat.completions.create(
             model=self._settings.deepseek_model,
             messages=messages,
             max_tokens=max_tokens,
+            response_format=response_format,
         )
         return resp.choices[0].message.content or ""

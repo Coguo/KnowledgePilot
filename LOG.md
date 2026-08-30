@@ -9,7 +9,7 @@
 | 0 | 基础 Research Chat（用户 → LLM → 搜索 → 答案） | ✅ 完成 | 2026-08-16 |
 | 1 | RAG（Chunk → Embedding → VectorDB → Retrieval） | ✅ 完成 | 2026-08-25 |
 | 2 | RAG 优化（Recursive Chunk / Hybrid / Reranker / Query Rewrite / Evaluation） | ✅ 完成 | 2026-08-25 |
-| 3 | LangGraph Agent 编排 | ⬜ 未开始 | - |
+| 3 | LangGraph Agent 编排 | ✅ 完成 | 2026-08-29 |
 | 4 | Memory（研究历史 / 用户画像） | ⬜ 未开始 | - |
 | 5 | Knowledge Graph / GraphRAG | ⬜ 未开始 | - |
 | 6 | MCP | ⬜ 未开始 | - |
@@ -186,3 +186,53 @@ knowledge_pilot/
 - 扩充评测数据集（几十条 query），`--real` 出可引用矩阵。
 - semantic chunk 对照进同一矩阵；知识库检索暴露为独立 tool（`search_knowledge_base`）。
 - 之后进入 Phase 3（LangGraph Agent 编排），`rag/` 各组件已是 Protocol 接缝可直接复用。
+
+---
+
+## Phase 3 — LangGraph Agent 编排（2026-08-29）
+
+### 项目方向
+
+用 **LangGraph** 把 Phase 0-2 的单轮线性研究升级为多阶段工作流：`Planner（拆解）→ Research（Agentic 工具循环）→ Evaluate（评估充分性）→ 不充分条件循环 → Synthesis（带引用报告）`。详细设计见 `docs/phase-3.md`。
+
+### 关键决策
+
+- **研究任务本质是多阶段 + 条件循环**，这是引入 LangGraph（State/Node/Edge/Conditional Edge/Checkpoint）的"实际需求"时点（规格 §2）。**核心版范围**：不引入 KG/MCP/复杂 Memory；`AGENT_MODE=graph|loop` 开关保留旧单轮循环做回归对比。
+- **Research 节点复用现有 LLM tool-calling 循环（Agentic）**：图为高层编排，工具执行为底层能力，不重复造轮子；在工具边界经 `on_search_results` 钩子采集结构化证据（默认 None，Phase 0-2 路径零改动）。
+- **事件流式走 langgraph 原生 `stream_mode="custom"` + `get_stream_writer()`**：节点内实时推事件、runner 一行消费——替代了手写 asyncio.Queue + create_task 方案，少一堆轮询/异常/孤儿任务坑。
+- **证据用 `Annotated[list, operator.add]` reducer**（research 循环多次写，整体替换会丢前几轮）；`iteration` 唯一写者在 evaluate；`max_iterations` 由 runner 注入初始 state 不硬编码。
+- **DeepSeek `json_object` 模式硬性要求 prompt 含 "json" 字样**（否则 HTTP 400）——planner/evaluate 的 system prompt 写死"输出 JSON" + 示例结构；解析失败分别回退单步计划 / 默认充分（防死循环）。`llm/json_utils.py` 提供健壮 JSON 解析。
+- **MemorySaver（内存）**：满足 Checkpoint 学习目标且零基建；每次运行现建现编译 + 唯一 `thread_id`（MemorySaver 强制要求）即隔离并发。跨重启断点恢复（SqliteSaver）留到 Phase 4。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| 编排 | langgraph>=0.4（base dependencies；`requires-python` 提到 >=3.11） |
+| 新模块 | `agent/graph.py`（ResearchState + 4 async node + 条件边 + runner）、`llm/json_utils.py` |
+| 事件 | `agent/events.py` 新增 PlanEvent / StatusEvent / EvalEvent |
+| 配置 | `agent_mode`（graph/loop，默认 graph）、`agent_max_iterations=3` |
+
+### 实现内容
+
+- 图拓扑 `START → planner → research → evaluate →(条件)→ synthesize → END`；条件边 `route_after_evaluate`：`sufficient 或 iteration>=max_iterations → synthesize`，否则回 research。
+- research 节点：`query + plan + refined_instruction` 组研究指令 → `run_research`（agentic 循环）→ 钩子采集 `EvidenceItem(source/title/snippet)`；**丢弃研究阶段 TokenEvent 与内层 DoneEvent**（防污染最终报告），转发 tool 事件。
+- synthesize：基于 query+plan+evidence 写带 `[1][2]` 引用 markdown 报告，`DoneEvent` 结尾（事件流语义与 Phase 0-2 一致）。
+- `/api/chat` 按 `agent_mode` 分支 graph/loop；`_sse_frame` 扩展三类新事件；前端最小渲染 plan/status/eval。
+- `llm/client.py`：`complete()` 加 `response_format` 透传（DeepSeek json_object）。
+
+### 测试
+
+- 新增 `tests/test_agent_graph.py`（7 个）：充分直通事件序列、不足循环+证据 reducer 累计、达上限兜底防死循环、planner/evaluate JSON 解析失败回退、证据采集、事件不串轮。
+- `tests/test_api.py`：graph 模式 SSE 帧含 plan/eval/done + `complete_calls==3`；loop 模式回归旧序列。`tests/test_config.py` 新增 agent 默认值。
+- **测试全离线**（FakeChatClient 脚本化 LLM + Stub 搜索），旧 82 测试零改动。预计全绿：旧 82 + 6 跳过 + 新增 graph 测试（沙箱被 Device Guard 拦截无法运行 env python，**需本地验证**）。
+
+### 已知问题
+
+- `get_stream_writer()` 依赖 langgraph>=0.4（依赖下限已固定）；runner 有 `aget_state` 兜底补发 DoneEvent，但中间事件若缺失会表现为测试失败。
+- 报告非流式（synthesize 用 `complete()` 一次返回）；RAG 增强片段不进 evidence（只覆盖 web 搜索原始结果）；图内 LLM 调用异常无重试。
+- `evidence` 跨轮可能重复（只做轮内按 URL 去重）。
+
+### 下一步
+
+- 进入 **Phase 4：Memory**——研究历史（query/plan/report/来源）落库复用；MemorySaver 换 SqliteSaver + 断点恢复；合成流式化；RAG hits 进证据；图级离线评测（Agent Evaluation）回答「图相比单轮循环是否真的更好」。
