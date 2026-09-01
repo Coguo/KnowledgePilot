@@ -38,7 +38,7 @@
 </head>
 <body>
   <h1>🧭 KnowledgePilot · Research Chat</h1>
-  <p class="subtitle">Phase 3 · LangGraph 研究编排（拆解 → 多轮研究 → 评估充分性 → 报告）</p>
+  <p class="subtitle">Phase 4 · Memory（研究历史落库复用 + Checkpoint 持久化）</p>
 
   <div id="log"></div>
 
@@ -130,6 +130,13 @@
         el.className = 'tool-status';
         const mark = evt.sufficient ? '✅ 信息已充分' : '🔁 信息不足，继续研究';
         el.textContent = `第 ${evt.iteration} 轮评估：${mark} — ${evt.reason}`;
+        assistantEl.querySelector('.tools').appendChild(el);
+        break;
+      }
+      case 'memory': {
+        const el = document.createElement('div');
+        el.className = 'tool-status';
+        el.textContent = '🧠 找到 ' + evt.found + ' 条历史研究记录，已供规划参考';
         assistantEl.querySelector('.tools').appendChild(el);
         break;
       }

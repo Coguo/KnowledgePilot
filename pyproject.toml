@@ -17,6 +17,8 @@ dependencies = [
     # Phase 3：LangGraph 编排 Research Workflow（State/Node/Edge/Conditional Edge/Checkpoint）
     # >=0.4 保证 stream_mode="custom" + StreamPart（v2 流协议）稳定
     "langgraph>=0.4",
+    # Phase 4：SqliteSaver（图 checkpoint 跨重启持久化；懒导入失败回退 MemorySaver）
+    "langgraph-checkpoint-sqlite>=1.0",
 ]
 
 [project.optional-dependencies]

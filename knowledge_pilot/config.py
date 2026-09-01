@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     agent_mode: Literal["graph", "loop"] = "graph"
     agent_max_iterations: int = 3  # 研究-评估条件循环上限（防死循环）
 
+    # Memory（Phase 4，可选；纯 stdlib sqlite3，默认关向后兼容）
+    memory_enabled: bool = False  # 开启后：研究历史落库 + 同类问题复用 + checkpoint 持久化
+    memory_db_path: str = "./data/research_memory.db"  # 研究历史（query/plan/report/来源）
+    memory_checkpoint_db_path: str = "./data/graph_checkpoints.db"  # 图 checkpoint（SqliteSaver）
+    memory_top_k: int = 3  # 新研究开始时召回的历史研究条数
+
     # RAG Optimization（Phase 2，可选旋钮；全部可插拔，默认开启 Hybrid + Rerank）
     rag_hybrid_enabled: bool = True  # BM25 + 向量 RRF 混合搜索
     rag_rerank_enabled: bool = True  # bge-reranker-base CrossEncoder 精排

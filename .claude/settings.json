@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/12566/.engramory/**)",
-      "Read(//c/Users/12566/.engramory/User/**)"
+      "Read(//c/Users/12566/.engramory/User/**)",
+      "Bash(D:/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/python.exe -m pip list)",
+      "Read(//d/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/conda-meta/**)",
+      "Read(//d/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/Lib/site-packages/**)"
     ]
   }
 }

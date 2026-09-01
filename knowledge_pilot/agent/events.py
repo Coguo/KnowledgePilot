@@ -61,3 +61,10 @@ class EvalEvent:
     sufficient: bool
     reason: str
     iteration: int
+
+
+@dataclass
+class MemoryEvent:
+    """Phase 4：开始研究时召回了多少条历史研究记录（供规划参考复用）。"""
+
+    found: int

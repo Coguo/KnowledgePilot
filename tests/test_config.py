@@ -44,6 +44,22 @@ def test_agent_defaults_without_env():
     assert s.agent_max_iterations == 3
 
 
+def test_memory_defaults_without_env():
+    s = Settings(_env_file=None)
+    assert s.memory_enabled is False
+    assert s.memory_db_path == "./data/research_memory.db"
+    assert s.memory_checkpoint_db_path == "./data/graph_checkpoints.db"
+    assert s.memory_top_k == 3
+
+
+def test_memory_env_overrides(monkeypatch):
+    monkeypatch.setenv("MEMORY_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_TOP_K", "5")
+    s = Settings(_env_file=None)
+    assert s.memory_enabled is True
+    assert s.memory_top_k == 5
+
+
 def test_rag_env_overrides(monkeypatch):
     monkeypatch.setenv("RAG_ENABLED", "true")
     monkeypatch.setenv("RAG_TOP_K", "5")

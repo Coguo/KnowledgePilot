@@ -29,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from knowledge_pilot.agent.events import (
     DoneEvent,
     EvalEvent,
+    MemoryEvent,
     PlanEvent,
     StatusEvent,
     TokenEvent,
@@ -36,6 +37,8 @@ from knowledge_pilot.agent.events import (
 from knowledge_pilot.agent.loop import run_research
 from knowledge_pilot.llm.client import LLMClient
 from knowledge_pilot.llm.json_utils import parse_json_object
+from knowledge_pilot.memory.context import build_memory_context
+from knowledge_pilot.memory.store import ResearchMemoryStore
 from knowledge_pilot.search.base import SearchProvider, SearchResult
 
 # 研究-评估条件循环的兜底上限（runner 会用调用方传入值覆盖，此处仅作类型占位）。
@@ -97,12 +100,26 @@ class ResearchState(TypedDict):
 # ---- 节点 ---------------------------------------------------------------
 
 
-async def planner_node(state: ResearchState, *, llm: LLMClient, search: object = None, rag: object = None) -> dict:
-    """拆解研究问题为子问题列表，发 PlanEvent。解析失败回退单步计划。"""
+async def planner_node(
+    state: ResearchState,
+    *,
+    llm: LLMClient,
+    search: object = None,
+    rag: object = None,
+    memory_context: str | None = None,
+) -> dict:
+    """拆解研究问题为子问题列表，发 PlanEvent。解析失败回退单步计划。
+
+    memory_context：Phase 4 召回的「历史研究背景」块（非空时拼进 user 消息头部，
+    让规划参考用户已研究过的内容、深化或补缺，而不是重复研究）。
+    """
     writer = get_stream_writer()
+    user_content = state["query"]
+    if memory_context:
+        user_content = f"{memory_context}\n\n本次研究问题：{user_content}"
     prompt = [
         {"role": "system", "content": PLANNER_PROMPT},
-        {"role": "user", "content": state["query"]},
+        {"role": "user", "content": user_content},
     ]
     raw = await llm.complete(prompt, response_format={"type": "json_object"})
     parsed = parse_json_object(raw)
@@ -236,10 +253,23 @@ def route_after_evaluate(state: ResearchState) -> Literal["research", "synthesiz
 # ---- 图构建与 runner ----------------------------------------------------
 
 
-def _build_app(*, llm: LLMClient, search: SearchProvider, rag: object | None):
-    """现建现编译（每次运行独立，天然并发隔离）。"""
+def _build_app(
+    *,
+    llm: LLMClient,
+    search: SearchProvider,
+    rag: object | None,
+    memory_context: str | None = None,
+    checkpointer: object | None = None,
+):
+    """现建现编译（每次运行独立，天然并发隔离）。
+
+    checkpointer：None → MemorySaver（内存）；Phase 4 传入 SqliteSaver 时持久化到磁盘。
+    """
     builder = StateGraph(ResearchState)
-    builder.add_node("planner", partial(planner_node, llm=llm, search=search, rag=rag))
+    builder.add_node(
+        "planner",
+        partial(planner_node, llm=llm, search=search, rag=rag, memory_context=memory_context),
+    )
     builder.add_node("research", partial(research_node, llm=llm, search=search, rag=rag))
     builder.add_node("evaluate", partial(evaluate_node, llm=llm, search=search, rag=rag))
     builder.add_node("synthesize", partial(synthesize_node, llm=llm, search=search, rag=rag))
@@ -252,7 +282,44 @@ def _build_app(*, llm: LLMClient, search: SearchProvider, rag: object | None):
         {"research": "research", "synthesize": "synthesize"},
     )
     builder.add_edge("synthesize", END)
-    return builder.compile(checkpointer=MemorySaver())
+    return builder.compile(checkpointer=checkpointer or MemorySaver())
+
+
+async def _drive(app, state: ResearchState, config: dict, sink: dict) -> AsyncIterator[object]:
+    """消费图事件流；结束后取最终 state 存入 sink（供落库与 DoneEvent 兜底复用）。
+
+    兜底：若 get_stream_writer 在个别 langgraph 版本未生效导致 DoneEvent 丢失，
+    从 checkpoint 取最终 state 的报告补发（保证调用方总能收到 done）。
+    """
+    saw_done = False
+    async for part in app.astream(state, config=config, stream_mode="custom"):
+        # 归一化 v1/v2 流协议：StreamPart 的负载在 .data。
+        payload = getattr(part, "data", part)
+        if isinstance(payload, DoneEvent):
+            saw_done = True
+        yield payload
+
+    final = await app.aget_state(config)
+    sink["values"] = final.values or {}
+    if not saw_done and sink["values"].get("report"):
+        yield DoneEvent(content=sink["values"]["report"])
+
+
+def _dedup_sources(evidence: list) -> list[dict]:
+    """evidence（EvidenceItem 对象/dict 列表）按 URL 去重为 {title, url} 来源列表。"""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in evidence:
+        if isinstance(item, dict):
+            url = item.get("source") or item.get("url") or ""
+            title = item.get("title") or ""
+        else:
+            url = getattr(item, "source", "") or ""
+            title = getattr(item, "title", "") or ""
+        if url and url not in seen:
+            seen.add(url)
+            out.append({"title": title, "url": url})
+    return out
 
 
 async def run_research_graph(
@@ -262,12 +329,26 @@ async def run_research_graph(
     search: SearchProvider,
     rag: object | None = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    memory: ResearchMemoryStore | None = None,
+    memory_top_k: int = 3,
+    checkpoint_db: str | None = None,
 ) -> AsyncIterator[object]:
-    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/done）。
+    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/done）。
 
-    MemorySaver 编译后要求 thread_id；图每次现建现编译，thread_id 每次唯一。
+    memory（Phase 4，默认 None 行为与 Phase 3 逐字节一致）：非空时——
+    开跑前召回相关历史注入 planner（并先发 MemoryEvent 提示），流结束后把本次
+    研究落库；同时图 checkpoint 持久化到 checkpoint_db（SqliteSaver，懒导入失败
+    回退 MemorySaver）。MemorySaver 编译后要求 thread_id；图每次现建现编译，
+    thread_id 每次唯一。
     """
-    app = _build_app(llm=llm, search=search, rag=rag)
+    # 1) 记忆召回：新研究开始前，看用户以前研究过什么。
+    memory_context = None
+    if memory is not None:
+        related = memory.search(query, top_k=memory_top_k)
+        if related:
+            memory_context = build_memory_context(related)
+            yield MemoryEvent(found=len(related))
+
     state: ResearchState = {
         "query": query,
         "plan": [],
@@ -279,22 +360,51 @@ async def run_research_graph(
         "report": "",
     }
     config = {"configurable": {"thread_id": f"research-{uuid4().hex}"}}
+    sink: dict = {}
 
-    saw_done = False
-    async for part in app.astream(state, config=config, stream_mode="custom"):
-        # 归一化 v1/v2 流协议：StreamPart 的负载在 .data。
-        payload = getattr(part, "data", part)
-        if isinstance(payload, DoneEvent):
-            saw_done = True
-        yield payload
+    # 2) 编译图：memory 启用时用 SqliteSaver 持久化 checkpoint（懒导入，失败回退）。
+    saver_cm = None
+    if memory is not None and checkpoint_db:
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
 
-    # 兜底：若 get_stream_writer 在个别 langgraph 版本未生效导致 DoneEvent 丢失，
-    # 从 checkpoint 取最终 state 的报告补发（保证调用方总能收到 done）。
-    if not saw_done:
-        final = await app.aget_state(config)
-        report = (final.values or {}).get("report") or ""
-        if report:
-            yield DoneEvent(content=report)
+            saver_cm = SqliteSaver.from_conn_string(checkpoint_db)
+        except ImportError:
+            saver_cm = None  # 未装 langgraph-checkpoint-sqlite → 回退 MemorySaver
+
+    if saver_cm is not None:
+        with saver_cm as saver:
+            app = _build_app(
+                llm=llm,
+                search=search,
+                rag=rag,
+                memory_context=memory_context,
+                checkpointer=saver,
+            )
+            async for payload in _drive(app, state, config, sink):
+                yield payload
+    else:
+        app = _build_app(
+            llm=llm,
+            search=search,
+            rag=rag,
+            memory_context=memory_context,
+            checkpointer=None,
+        )
+        async for payload in _drive(app, state, config, sink):
+            yield payload
+
+    # 3) 落库：研究完成后持久化 query / plan / evidence / report / sources。
+    if memory is not None:
+        values = sink.get("values") or {}
+        evidence = values.get("evidence") or []
+        memory.save_run(
+            query,
+            plan=values.get("plan") or [],
+            evidence=evidence,
+            report=values.get("report") or "",
+            sources=_dedup_sources(evidence),
+        )
 
 
 # ---- 工具函数 -----------------------------------------------------------

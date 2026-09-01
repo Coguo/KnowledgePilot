@@ -10,7 +10,7 @@
 | 1 | RAG（Chunk → Embedding → VectorDB → Retrieval） | ✅ 完成 | 2026-08-25 |
 | 2 | RAG 优化（Recursive Chunk / Hybrid / Reranker / Query Rewrite / Evaluation） | ✅ 完成 | 2026-08-25 |
 | 3 | LangGraph Agent 编排 | ✅ 完成 | 2026-08-29 |
-| 4 | Memory（研究历史 / 用户画像） | ⬜ 未开始 | - |
+| 4 | Memory（研究历史 / 用户画像） | ✅ 完成 | 2026-09-01 |
 | 5 | Knowledge Graph / GraphRAG | ⬜ 未开始 | - |
 | 6 | MCP | ⬜ 未开始 | - |
 | 7 | 工程化（Redis / PostgreSQL / Model Gateway / Docker） | ⬜ 未开始 | - |
@@ -236,3 +236,60 @@ knowledge_pilot/
 ### 下一步
 
 - 进入 **Phase 4：Memory**——研究历史（query/plan/report/来源）落库复用；MemorySaver 换 SqliteSaver + 断点恢复；合成流式化；RAG hits 进证据；图级离线评测（Agent Evaluation）回答「图相比单轮循环是否真的更好」。
+
+---
+
+## Phase 4 — Memory（2026-09-01）
+
+### 项目方向
+
+回答规格 §9 的核心问题：**RAG 回答「世界上关于这个问题有哪些资料」，Memory 回答「这个用户之前研究过什么」**。研究完成后把 query/plan/evidence/report/sources 落库；新研究开始时按关键词召回相关历史注入规划流程复用；图 checkpoint 从内存（MemorySaver）升级为磁盘持久化（SqliteSaver）。详细设计见 `docs/phase-4.md`。
+
+### 关键决策
+
+- **Memory 与 RAG 分离、用 SQLite（stdlib）而非向量库**：历史记录数据量小、结构固定，SQLite 零重依赖、离线可测；语义向量召回留作后续可选增强（复用 RAG embedder）。
+- **默认关（`MEMORY_ENABLED=false`），opt-in**：与 RAG 同款模式，默认行为与 Phase 3 逐字节一致，旧测试零改动。
+- **关键词召回（中文双字重叠 + 拉丁整词，独立于 rag/lexical）**：零依赖、确定性、离线可测；不引入 jieba/embedding，符合「不为展示技术强行加」原则。
+- **记忆注入 planner（不注入 research/synthesize）**：研究计划最能反映「已研究过什么 → 深化或补缺」；research/synthesize 注入留作后续。
+- **SqliteSaver 用 sync 版**：只依赖 stdlib sqlite3，官方推荐轻量场景；async 版需 aiosqlite 且有「async checkpointer + sync 调用挂起」已知坑。懒导入失败回退 MemorySaver。
+- **知识状态不单独建表**：一条历史记录（query + 日期 + 报告摘要）本身即在表达「研究过什么、结论如何」，召回即知识状态。
+- **`memory` 为可选参数、`run_research_graph` 向后兼容**；每请求建临时 store、请求结束关闭（与 RAG 同款生命周期）。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| 新模块 | `knowledge_pilot/memory/`（store.py / context.py / __init__.py，纯 stdlib sqlite3） |
+| 图集成 | `agent/graph.py`：`run_research_graph(..., memory, memory_top_k, checkpoint_db)` + planner memory_context + `_drive` 抽取 |
+| Checkpoint | `langgraph-checkpoint-sqlite>=1.0`（sync SqliteSaver；base dependencies） |
+| 事件 | `MemoryEvent(found)`；SSE `memory` 帧；前端「🧠 找到 N 条历史研究记录」 |
+
+### 实现内容
+
+- `memory/store.py`：`ResearchMemoryStore`——`research_runs` 表 + `save_run` / `search`（关键词打分召回，rowid 定序）/ `recent` / `count` / `close`；线程锁 + `check_same_thread=False`。
+- `memory/context.py`：`build_memory_context` 拼「历史研究背景」prompt 块。
+- `agent/graph.py`：开跑前召回 → `MemoryEvent` + 注入 planner；跑完 `aget_state` → `save_run`（sources 按 URL 去重）；SqliteSaver 懒导入回退。
+- `config.py` / `.env.example`：`memory_enabled` / `memory_db_path` / `memory_checkpoint_db_path` / `memory_top_k`。
+- `api/main.py`：`ChatDeps.memory` + 按开关建/关 store + `memory` 帧。
+- 前端副标题 + memory 事件渲染。
+
+### 测试
+
+- **新增 19 个**：`test_memory_store.py`（11，不依赖 langgraph 可独立跑）+ `test_memory_graph.py`（6）+ `test_api.py`（2：帧编码 + graph 模式 memory 帧）+ `test_config.py`（2）。
+- 全离线（Fake LLM + Stub 搜索 + tmp_path SQLite）；旧测试零改动。
+- 已本地跑通：`test_memory_store.py` + `test_config.py` **16 通过**（不依赖 langgraph）。
+- **graph/api 测试需本地执行**：env 尚未安装 langgraph / langgraph-checkpoint-sqlite（Phase 3 依赖同样未装），沙箱无法运行。
+
+### 已知问题
+
+- 召回是浅层关键词匹配，无语义相似度（同义表达可能召回不到；后续可加 embedding 分支）。
+- SqliteSaver 路径未经本环境运行验证（依赖未装）；sync saver 写入短暂阻塞事件循环（本地可忽略）。
+- 跨重启「断点恢复」UX 依赖 HITL（本阶段 checkpoint 只保证持久化到磁盘）。
+- 承袭 Phase 3：报告非流式、RAG hits 不进 evidence、图内 LLM 无重试。
+
+### 下一步
+
+- **向量语义召回**（Memory search 加 embedding 分支，与关键词混合）→ 需要 `[rag]` extra。
+- **记忆注入 research/synthesize**；**SqliteSaver 断点恢复 + HITL**（研究可暂停/恢复、人工介入）。
+- **图级离线评测（Agent Evaluation，规格 §13）**：planner 拆解质量 / evaluate 判定准确率，用数据回答「图 + 记忆相比单轮循环是否真的更好」。
+- 之后按规格推进 Knowledge Graph / MCP（各有明确触发条件）。

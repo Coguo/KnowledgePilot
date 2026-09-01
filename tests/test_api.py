@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from knowledge_pilot.api import main as api_main
 from knowledge_pilot.api.main import ChatDeps, app, get_chat_deps
+from knowledge_pilot.memory import create_memory_store
 from knowledge_pilot.search.stub import StubSearchProvider
 
 from tests.fakes import FakeChatClient
@@ -156,3 +157,50 @@ async def test_chat_graph_mode_streams_plan_eval_done(monkeypatch):
     assert frames[-2]["content"] == "# 报告"
     # planner + evaluate + synthesize = 3 次非流式调用
     assert llm.complete_calls == 3
+
+
+def test_sse_frame_maps_memory_event():
+    """_sse_frame 正确编码 MemoryEvent（前端依赖该协议）。"""
+    from knowledge_pilot.agent.events import MemoryEvent
+    from knowledge_pilot.api.main import _sse_frame
+
+    frame = _sse_frame(MemoryEvent(found=2))
+    assert json.loads(frame[len("data: "):]) == {"type": "memory", "found": 2}
+
+
+async def test_chat_graph_memory_event_frame(monkeypatch, tmp_path):
+    """Memory 启用且召回历史时：SSE 流含 memory 帧。"""
+    monkeypatch.setattr(api_main.settings, "agent_mode", "graph")
+    monkeypatch.setattr(
+        api_main.settings, "memory_checkpoint_db_path", str(tmp_path / "graph.db")
+    )
+    store = create_memory_store(str(tmp_path / "memory.db"))
+    store.save_run("chunking 策略", plan=[], evidence=[], report="fixed 与 recursive 对比", sources=[])
+
+    llm = FakeChatClient(script=[(["完成"], [])])
+    llm.complete_script = [
+        '{"steps": [{"title": "A", "question": "子问题A", "purpose": "p"}]}',
+        '{"sufficient": true, "reason": "够", "gap": ""}',
+        "# 报告",
+    ]
+    app.dependency_overrides[get_chat_deps] = lambda: ChatDeps(
+        llm=llm, search=StubSearchProvider(), memory=store
+    )
+    try:
+        async with await _client() as client:
+            async with client.stream(
+                "POST", "/api/chat", json={"message": "比较 chunking 策略"}
+            ) as resp:
+                assert resp.status_code == 200
+                frames = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        frames.append("[DONE]" if data == "[DONE]" else json.loads(data))
+    finally:
+        app.dependency_overrides.clear()
+        store.close()
+
+    types = [f["type"] for f in frames if f != "[DONE]"]
+    assert "memory" in types
+    assert frames[-1] == "[DONE]"
