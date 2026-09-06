@@ -68,3 +68,12 @@ class MemoryEvent:
     """Phase 4：开始研究时召回了多少条历史研究记录（供规划参考复用）。"""
 
     found: int
+
+
+@dataclass
+class KgEvent:
+    """Phase 5：知识图谱构建结果（抽取的实体/关系数 + 命中查询的三角组数）。"""
+
+    entities: int
+    relations: int
+    found_triples: int

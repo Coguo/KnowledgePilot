@@ -11,7 +11,7 @@
 | 2 | RAG 优化（Recursive Chunk / Hybrid / Reranker / Query Rewrite / Evaluation） | ✅ 完成 | 2026-08-25 |
 | 3 | LangGraph Agent 编排 | ✅ 完成 | 2026-08-29 |
 | 4 | Memory（研究历史 / 用户画像） | ✅ 完成 | 2026-09-01 |
-| 5 | Knowledge Graph / GraphRAG | ⬜ 未开始 | - |
+| 5 | Knowledge Graph / GraphRAG | ✅ 完成 | 2026-09-01 |
 | 6 | MCP | ⬜ 未开始 | - |
 | 7 | 工程化（Redis / PostgreSQL / Model Gateway / Docker） | ⬜ 未开始 | - |
 
@@ -293,3 +293,58 @@ knowledge_pilot/
 - **记忆注入 research/synthesize**；**SqliteSaver 断点恢复 + HITL**（研究可暂停/恢复、人工介入）。
 - **图级离线评测（Agent Evaluation，规格 §13）**：planner 拆解质量 / evaluate 判定准确率，用数据回答「图 + 记忆相比单轮循环是否真的更好」。
 - 之后按规格推进 Knowledge Graph / MCP（各有明确触发条件）。
+
+---
+
+## Phase 5 — Knowledge Graph（2026-09-01）
+
+### 项目方向
+
+回答规格 §8 的核心命题：**Vector RAG + Knowledge Graph 并存**——RAG 给原始文本证据，KG 给结构化关系信息。研究结束后从已收集资料用 LLM 抽取实体与关系，建**本次任务的内存知识图谱**；按研究问题关键词匹配实体、BFS 展开子图，把命中的三元组作为「相关实体关系」块注入综合报告 prompt。用户已确认：**核心版 + 纯 stdlib 手写图存储（零新依赖）**，并选择跳过 Phase 4 本地验证直接开工。详细设计见 `docs/phase-5.md`。
+
+### 关键决策
+
+- **触发条件已确认**：用户选择按规格 Phase 5 推进 KG 核心版（「文本检索无法充分表达实体关系」时引入）。**范围外**：跨任务图谱积累（GraphRAG）、图谱持久化、`query_knowledge_graph` 工具、查询实体 LLM 抽取/语义匹配——都留后续，避免堆功能。
+- **图存储：纯 stdlib 手写 dict 邻接表**（用户确认，不用 networkx）：per-task 图很小（几十实体），BFS 遍历手动写就够；与 Memory（sqlite）、BM25、分词器手写的零依赖风格一致；离线确定性可测。无新增依赖，`pyproject.toml` 零改动。
+- **抽实体/关系 = 一次 LLM 调用**（`complete(json_object)` + 健壮解析，prompt 含 "json" 满足 DeepSeek 硬性要求）：从拼接证据抽取，失败/无实体 → `KgEvent(0,0,0)`、`kg_context=""`，**绝不阻断研究**（KG 是可选增强）。
+- **查询→实体匹配用确定性关键词重叠**（中文双字 + 拉丁整词，独立实现不耦合 memory/rag）：词干匹配（chunk⊆chunking）、大小写归一、单字符误报防护（len≥2）、命中上限 10 防通用词拉爆整图。不二次调 LLM，全离线可测；LLM/嵌入语义匹配留作后续增强。
+- **图谱只注入 synthesize（不注入 planner/research）**：KG 的价值在「报告考虑结构化关系」，规划/研究中不需要。
+- **`kg_enabled=False` 默认关**，与 Phase 4 逐字节一致、旧测试零改动；KG 只在 `agent_mode="graph"` 生效（loop 模式无 KG）。**无工厂、无 ChatDeps 改动**：图是 per-task 临时对象，API 层只透传 `kg_enabled` / `kg_hops` 两个开关。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| 新模块 | `knowledge_pilot/kg/`（graph.py 存储/分词/匹配 + extract.py 抽取/格式化 + __init__.py，纯 stdlib） |
+| 图集成 | `agent/graph.py`：evaluate 与 synthesize 之间插 `kg` 节点 + `kg_context` 进 ResearchState/synthesize prompt |
+| 事件 | `KgEvent(entities, relations, found_triples)`；SSE `kg` 帧；前端「🕸️ 知识图谱：N 实体 / M 关系，命中 K 条」 |
+| 配置 | `kg_enabled`（默认 false）、`kg_hops`（默认 2）；`.env.example` 新增段 |
+| 依赖 | **零新增**（纯 stdlib dict 邻接） |
+
+### 实现内容
+
+- `kg/graph.py`：`GraphStore`（dict 邻接 + 三元组 set 去重；`add_entities`/`add_relations` 自动建端点 + 归一化去重；`query` 沿出边+入边 BFS，hops≥1 防误配）；`tokenize`/`_token_matches`/`match_query_entities`（关键词匹配 + 命中上限）。
+- `kg/extract.py`：`KG_EXTRACT_PROMPT` + `extract_entities_relations`（空文本短路、结构校验、异常吞掉返回空）+ `format_triples`/`build_kg_context`。
+- `agent/graph.py`：`ResearchState` 加 `kg_context`；`kg_node`（StatusEvent → 拼证据文本(≤8000 字符) → 抽取 → 建图 → 关键词匹配 → BFS → KgEvent + kg_context）；`_build_app` 条件加 `kg` 节点与 `evaluate→kg→synthesize` 边（禁用时折叠回 Phase 3 字面量，逐字节一致）；`synthesize_node` 在计划与证据之间插图谱块；`run_research_graph` 透传 `kg_enabled`/`kg_hops`。
+- `api/main.py`：`_sse_frame` 加 `KgEvent` → `{"type":"kg",...}`；call site 透传开关。前端副标题 + `case 'kg'` 渲染。
+- 配置 `config.py` + `.env.example`。
+
+### 测试
+
+- **新增 27 个**（其中 20 个不依赖 langgraph）：`test_kg_store.py`（11：分词/建图/归一化/去重/hops 展开/入边命中/防误配/关键词匹配）+ `test_kg_extract.py`（7：抽取切分/空文本短路/乱码/结构过滤/API 异常吞掉/格式化）+ `test_kg_graph.py`（6：注入 synthesize + KgEvent 计数、禁用零改动、空结果与禁用逐字节一致、抽取失败不阻断、循环时只跑一次、事件顺序）+ `test_api.py`（2）+ `test_config.py`（2）。
+- **本地已跑通 93+27 通过（+6 跳过）**：纯 stdlib 的 kg/config/rag/search 测试全绿，旧测试零改动。graph/api 集成测试需 langgraph（env 尚未装，与 Phase 3/4 同情形），**需本地验证**。
+
+### 已知问题
+
+- 关键词匹配是浅层重叠：无语义/LLM/嵌入实体匹配，同义词不命中；通用 CJK 双字可能过匹配（已用 2 字符守卫 + 10 实体上限缓解）。
+- 拉丁实体名归一化小写 → 三元组展示为小写（去重鲁棒性的取舍）。
+- 每任务 +1 次 LLM 调用（抽取，延迟/成本）；抽取输入截断 8000 字符，尾部关系可能丢；抽取 API 异常被吞 → `KgEvent(0,0,0)`。
+- KG 只在 graph 模式生效；loop 模式忽略。graph/api 测试需 langgraph 本地装（用户已选择跳过 Phase 4 验证）。
+
+### 下一步
+
+- **GraphRAG 雏形**：跨任务图谱积累 + 图谱持久化（研究历史与图谱联动）。
+- **查询实体 LLM 抽取 / 嵌入语义匹配**（提升同义/泛化召回）。
+- **`query_knowledge_graph` 工具**（研究循环内显式查图）——随工具数量增长再考虑 MCP 统一管理。
+- 规格 §13 **Agent Evaluation（图级离线评测）**：用数据回答「图 + 记忆相比单轮循环是否真的更好」。
+- 之后进入 Phase 6 MCP（工具数量增加时引入）。

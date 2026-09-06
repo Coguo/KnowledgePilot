@@ -60,6 +60,20 @@ def test_memory_env_overrides(monkeypatch):
     assert s.memory_top_k == 5
 
 
+def test_kg_defaults_without_env():
+    s = Settings(_env_file=None)
+    assert s.kg_enabled is False
+    assert s.kg_hops == 2
+
+
+def test_kg_env_overrides(monkeypatch):
+    monkeypatch.setenv("KG_ENABLED", "true")
+    monkeypatch.setenv("KG_HOPS", "3")
+    s = Settings(_env_file=None)
+    assert s.kg_enabled is True
+    assert s.kg_hops == 3
+
+
 def test_rag_env_overrides(monkeypatch):
     monkeypatch.setenv("RAG_ENABLED", "true")
     monkeypatch.setenv("RAG_TOP_K", "5")

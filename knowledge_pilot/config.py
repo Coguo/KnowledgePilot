@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     memory_checkpoint_db_path: str = "./data/graph_checkpoints.db"  # 图 checkpoint（SqliteSaver）
     memory_top_k: int = 3  # 新研究开始时召回的历史研究条数
 
+    # Knowledge Graph（Phase 5，可选；纯 stdlib 内存图，默认关向后兼容）
+    kg_enabled: bool = False  # 开启后：研究结束前从证据抽实体关系建图，注入报告 prompt
+    kg_hops: int = 2  # 从匹配实体 BFS 扩展的边层数（1 层 = 直接相连关系）
+
     # RAG Optimization（Phase 2，可选旋钮；全部可插拔，默认开启 Hybrid + Rerank）
     rag_hybrid_enabled: bool = True  # BM25 + 向量 RRF 混合搜索
     rag_rerank_enabled: bool = True  # bge-reranker-base CrossEncoder 精排

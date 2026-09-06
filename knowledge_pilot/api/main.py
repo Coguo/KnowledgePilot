@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from knowledge_pilot.agent.events import (
     DoneEvent,
     EvalEvent,
+    KgEvent,
     MemoryEvent,
     PlanEvent,
     StatusEvent,
@@ -120,6 +121,8 @@ async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> Str
                     memory=deps.memory,
                     memory_top_k=settings.memory_top_k,
                     checkpoint_db=settings.memory_checkpoint_db_path,
+                    kg_enabled=settings.kg_enabled,
+                    kg_hops=settings.kg_hops,
                 )
             else:
                 runner = run_research(
@@ -180,6 +183,13 @@ def _sse_frame(event: object) -> str:
         }
     elif isinstance(event, MemoryEvent):
         payload = {"type": "memory", "found": event.found}
+    elif isinstance(event, KgEvent):
+        payload = {
+            "type": "kg",
+            "entities": event.entities,
+            "relations": event.relations,
+            "found_triples": event.found_triples,
+        }
     else:
         raise TypeError(f"未知事件类型: {event!r}")
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

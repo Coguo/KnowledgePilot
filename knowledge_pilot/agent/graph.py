@@ -29,12 +29,15 @@ from langgraph.graph import END, START, StateGraph
 from knowledge_pilot.agent.events import (
     DoneEvent,
     EvalEvent,
+    KgEvent,
     MemoryEvent,
     PlanEvent,
     StatusEvent,
     TokenEvent,
 )
 from knowledge_pilot.agent.loop import run_research
+from knowledge_pilot.kg.extract import build_kg_context, extract_entities_relations
+from knowledge_pilot.kg.graph import GraphStore, match_query_entities
 from knowledge_pilot.llm.client import LLMClient
 from knowledge_pilot.llm.json_utils import parse_json_object
 from knowledge_pilot.memory.context import build_memory_context
@@ -43,6 +46,9 @@ from knowledge_pilot.search.base import SearchProvider, SearchResult
 
 # 研究-评估条件循环的兜底上限（runner 会用调用方传入值覆盖，此处仅作类型占位）。
 DEFAULT_MAX_ITERATIONS = 3
+
+# 知识图谱抽取用的证据文本长度上限（防超长 token；超出截断）。
+KG_EVIDENCE_MAX_CHARS = 8000
 
 # 所有「输出 JSON」的 system prompt 必须包含单词 "json"：DeepSeek 的 json_object
 # 模式硬性要求 prompt 出现该词，否则返回 HTTP 400。
@@ -94,6 +100,7 @@ class ResearchState(TypedDict):
     max_iterations: int
     sufficient: bool
     refined_instruction: str
+    kg_context: str  # Phase 5：构建出的「相关实体关系」prompt 块（空 = 未启用/无命中）
     report: str
 
 
@@ -220,24 +227,60 @@ async def evaluate_node(state: ResearchState, *, llm: LLMClient, search: object 
 
 
 async def synthesize_node(state: ResearchState, *, llm: LLMClient, search: object = None, rag: object = None) -> dict:
-    """基于证据撰写带引用报告；报告作为 DoneEvent 结尾（与 run_research 语义一致）。"""
+    """基于证据撰写带引用报告；报告作为 DoneEvent 结尾（与 run_research 语义一致）。
+
+    kg_context（Phase 5，默认空）：非空时把「相关实体关系」块插在研究计划与
+    已收集资料之间，让报告考虑结构化关系信息（与 RAG 的原始文本证据并存）。
+    """
     writer = get_stream_writer()
     writer(StatusEvent(message="正在综合撰写报告…"))
     evidence_text = _format_evidence(state.get("evidence") or [])
+    kg_context = state.get("kg_context") or ""
+    user_content = (
+        f"研究问题：{state['query']}\n"
+        f"研究计划：{json.dumps(state.get('plan') or [], ensure_ascii=False)}\n"
+    )
+    if kg_context:
+        user_content += f"{kg_context}\n\n"
+    user_content += f"已收集资料（含来源）：\n{evidence_text or '（暂无）'}"
     prompt = [
         {"role": "system", "content": SYNTHESIZE_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"研究问题：{state['query']}\n"
-                f"研究计划：{json.dumps(state.get('plan') or [], ensure_ascii=False)}\n"
-                f"已收集资料（含来源）：\n{evidence_text or '（暂无）'}"
-            ),
-        },
+        {"role": "user", "content": user_content},
     ]
     report = await llm.complete(prompt, max_tokens=4096)
     writer(DoneEvent(content=report))
     return {"report": report}
+
+
+async def kg_node(state: ResearchState, *, llm: LLMClient, kg_hops: int = 2) -> dict:
+    """Phase 5：从已收集证据抽取实体关系 → 建内存图 → 按查询匹配实体 → BFS 展开，
+    把命中的三元组拼成「相关实体关系」块注入 synthesize。
+
+    任何失败都不阻断研究：无实体/无命中 → kg_context=""，并发出 KgEvent 计数。
+    """
+    writer = get_stream_writer()
+    writer(StatusEvent(message="正在构建知识图谱…"))
+
+    text = _build_kg_extraction_text(state.get("evidence") or [])
+    entities, relations = await extract_entities_relations(llm, text)
+    if not entities:
+        writer(KgEvent(entities=0, relations=0, found_triples=0))
+        return {"kg_context": ""}
+
+    store = GraphStore()
+    store.add_entities(entities)
+    store.add_relations(relations)
+    matched = match_query_entities(store, state["query"])
+    triples = store.query(matched, hops=kg_hops)
+
+    writer(
+        KgEvent(
+            entities=store.node_count(),
+            relations=store.edge_count(),
+            found_triples=len(triples),
+        )
+    )
+    return {"kg_context": build_kg_context(triples)}
 
 
 # ---- 路由 ---------------------------------------------------------------
@@ -260,10 +303,14 @@ def _build_app(
     rag: object | None,
     memory_context: str | None = None,
     checkpointer: object | None = None,
+    kg_enabled: bool = False,
+    kg_hops: int = 2,
 ):
     """现建现编译（每次运行独立，天然并发隔离）。
 
     checkpointer：None → MemorySaver（内存）；Phase 4 传入 SqliteSaver 时持久化到磁盘。
+    kg_enabled（Phase 5）：在 evaluate（充分）与 synthesize 之间插入 kg 节点；
+    禁用时图结构与 Phase 3/4 逐字节一致。
     """
     builder = StateGraph(ResearchState)
     builder.add_node(
@@ -273,13 +320,16 @@ def _build_app(
     builder.add_node("research", partial(research_node, llm=llm, search=search, rag=rag))
     builder.add_node("evaluate", partial(evaluate_node, llm=llm, search=search, rag=rag))
     builder.add_node("synthesize", partial(synthesize_node, llm=llm, search=search, rag=rag))
+    if kg_enabled:
+        builder.add_node("kg", partial(kg_node, llm=llm, kg_hops=kg_hops))
+        builder.add_edge("kg", "synthesize")
     builder.add_edge(START, "planner")
     builder.add_edge("planner", "research")
     builder.add_edge("research", "evaluate")
     builder.add_conditional_edges(
         "evaluate",
         route_after_evaluate,
-        {"research": "research", "synthesize": "synthesize"},
+        {"research": "research", "synthesize": "kg" if kg_enabled else "synthesize"},
     )
     builder.add_edge("synthesize", END)
     return builder.compile(checkpointer=checkpointer or MemorySaver())
@@ -332,14 +382,20 @@ async def run_research_graph(
     memory: ResearchMemoryStore | None = None,
     memory_top_k: int = 3,
     checkpoint_db: str | None = None,
+    kg_enabled: bool = False,
+    kg_hops: int = 2,
 ) -> AsyncIterator[object]:
-    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/done）。
+    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/kg/done）。
 
     memory（Phase 4，默认 None 行为与 Phase 3 逐字节一致）：非空时——
     开跑前召回相关历史注入 planner（并先发 MemoryEvent 提示），流结束后把本次
     研究落库；同时图 checkpoint 持久化到 checkpoint_db（SqliteSaver，懒导入失败
     回退 MemorySaver）。MemorySaver 编译后要求 thread_id；图每次现建现编译，
     thread_id 每次唯一。
+
+    kg_enabled（Phase 5，默认 False 行为与 Phase 4 逐字节一致）：在 evaluate 与
+    synthesize 之间插入 kg 节点——从证据抽实体关系建内存图、按查询匹配实体并
+    BFS 展开，把三元组注入报告 prompt。只在 graph 模式生效（loop 模式无 KG）。
     """
     # 1) 记忆召回：新研究开始前，看用户以前研究过什么。
     memory_context = None
@@ -357,6 +413,7 @@ async def run_research_graph(
         "max_iterations": max_iterations,
         "sufficient": False,
         "refined_instruction": "",
+        "kg_context": "",
         "report": "",
     }
     config = {"configurable": {"thread_id": f"research-{uuid4().hex}"}}
@@ -380,6 +437,8 @@ async def run_research_graph(
                 rag=rag,
                 memory_context=memory_context,
                 checkpointer=saver,
+                kg_enabled=kg_enabled,
+                kg_hops=kg_hops,
             )
             async for payload in _drive(app, state, config, sink):
                 yield payload
@@ -390,6 +449,8 @@ async def run_research_graph(
             rag=rag,
             memory_context=memory_context,
             checkpointer=None,
+            kg_enabled=kg_enabled,
+            kg_hops=kg_hops,
         )
         async for payload in _drive(app, state, config, sink):
             yield payload
@@ -416,3 +477,22 @@ def _format_evidence(items: list[EvidenceItem]) -> str:
         snippet = item.snippet if len(item.snippet) <= 600 else item.snippet[:600] + "…"
         lines.append(f"[{i}] {item.title}\n    来源：{item.source}\n    {snippet}")
     return "\n\n".join(lines)
+
+
+def _build_kg_extraction_text(evidence: list) -> str:
+    """把证据拼成知识图谱抽取输入：每条带来源标记；超长截断到 KG_EVIDENCE_MAX_CHARS。"""
+    lines = []
+    for item in evidence:
+        if isinstance(item, dict):
+            source = item.get("source") or ""
+            title = item.get("title") or ""
+            snippet = item.get("snippet") or ""
+        else:
+            source = getattr(item, "source", "") or ""
+            title = getattr(item, "title", "") or ""
+            snippet = getattr(item, "snippet", "") or ""
+        lines.append(f"[来源：{source} | {title}]\n{snippet}")
+    text = "\n\n".join(lines)
+    if len(text) > KG_EVIDENCE_MAX_CHARS:
+        return text[:KG_EVIDENCE_MAX_CHARS] + "…"
+    return text

@@ -168,6 +168,56 @@ def test_sse_frame_maps_memory_event():
     assert json.loads(frame[len("data: "):]) == {"type": "memory", "found": 2}
 
 
+def test_sse_frame_maps_kg_event():
+    """_sse_frame 正确编码 KgEvent（前端依赖该协议）。"""
+    from knowledge_pilot.agent.events import KgEvent
+    from knowledge_pilot.api.main import _sse_frame
+
+    frame = _sse_frame(KgEvent(entities=3, relations=2, found_triples=1))
+    assert json.loads(frame[len("data: "):]) == {
+        "type": "kg", "entities": 3, "relations": 2, "found_triples": 1,
+    }
+
+
+async def test_chat_graph_kg_event_frame(monkeypatch):
+    """KG 启用时：graph 模式 SSE 流含 kg 帧。"""
+    monkeypatch.setattr(api_main.settings, "agent_mode", "graph")
+    monkeypatch.setattr(api_main.settings, "kg_enabled", True)
+    llm = FakeChatClient(script=[
+        ([], [{"name": "search_web", "arguments": '{"query": "资料"}'}]),
+        (["完成"], []),
+    ])
+    llm.complete_script = [
+        '{"steps": [{"title": "A", "question": "子问题A", "purpose": "p"}]}',
+        '{"sufficient": true, "reason": "够", "gap": ""}',
+        '{"entities": [{"name": "RAG", "type": "concept"}], "relations": []}',
+        "# 报告",
+    ]
+    app.dependency_overrides[get_chat_deps] = lambda: ChatDeps(
+        llm=llm, search=StubSearchProvider()
+    )
+    try:
+        async with await _client() as client:
+            async with client.stream(
+                "POST", "/api/chat", json={"message": "RAG"}
+            ) as resp:
+                assert resp.status_code == 200
+                frames = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        frames.append("[DONE]" if data == "[DONE]" else json.loads(data))
+    finally:
+        app.dependency_overrides.clear()
+
+    kg_frames = [f for f in frames if f.get("type") == "kg"]
+    assert kg_frames
+    assert kg_frames[0]["entities"] == 1
+    assert kg_frames[0]["relations"] == 0
+    assert kg_frames[0]["found_triples"] == 0  # 1 实体 0 关系 → 无三元组
+    assert frames[-1] == "[DONE]"
+
+
 async def test_chat_graph_memory_event_frame(monkeypatch, tmp_path):
     """Memory 启用且召回历史时：SSE 流含 memory 帧。"""
     monkeypatch.setattr(api_main.settings, "agent_mode", "graph")

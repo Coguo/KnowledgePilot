@@ -38,7 +38,7 @@
 </head>
 <body>
   <h1>🧭 KnowledgePilot · Research Chat</h1>
-  <p class="subtitle">Phase 4 · Memory（研究历史落库复用 + Checkpoint 持久化）</p>
+  <p class="subtitle">Phase 5 · Knowledge Graph（实体关系抽取 + 注入报告）</p>
 
   <div id="log"></div>
 
@@ -137,6 +137,13 @@
         const el = document.createElement('div');
         el.className = 'tool-status';
         el.textContent = '🧠 找到 ' + evt.found + ' 条历史研究记录，已供规划参考';
+        assistantEl.querySelector('.tools').appendChild(el);
+        break;
+      }
+      case 'kg': {
+        const el = document.createElement('div');
+        el.className = 'tool-status';
+        el.textContent = '🕸️ 知识图谱：' + evt.entities + ' 实体 / ' + evt.relations + ' 关系，命中 ' + evt.found_triples + ' 条，已供报告参考';
         assistantEl.querySelector('.tools').appendChild(el);
         break;
       }
