@@ -65,6 +65,46 @@ class FakeChatClient:
             })
 
 
+class FakeMCPGateway:
+    """鸭子类型 MCPGateway：固定工具集 + 预设响应，记录每次调用。
+
+    graph 集成测试用它模拟 stdio 子进程网关——**测试完全不依赖 mcp**。
+    tools：OpenAI function schema 列表（与网关 tool_schemas() 返回同形状）；
+    responses：工具名 → 返回文本（缺省给兜底空结果）。
+    """
+
+    def __init__(self, tools=None, responses=None):
+        self._tools = list(tools or [])
+        self._responses = dict(responses or {})
+        self.calls: list[tuple[str, dict]] = []  # (name, arguments)
+
+    def names(self):
+        return [t["function"]["name"] for t in self._tools]
+
+    def has(self, name):
+        return any(t["function"]["name"] == name for t in self._tools)
+
+    def tool_schemas(self):
+        return list(self._tools)
+
+    def prompt_hint(self):
+        if not self._tools:
+            return ""
+        lines = [
+            "可用 MCP 辅助工具（结果仅供补充参考，不是网页搜索来源，无需 [n] 引用）："
+        ]
+        for t in self._tools:
+            fn = t["function"]
+            desc = fn.get("description", "") or ""
+            one = desc.splitlines()[0] if desc else ""
+            lines.append(f"- {fn['name']}: {one}")
+        return "\n".join(lines)
+
+    async def call(self, name, arguments):
+        self.calls.append((name, dict(arguments or {})))
+        return self._responses.get(name, "（工具无返回内容）")
+
+
 class FakeEmbedder:
     """确定性 Embedding：相同文本 → 相同归一化向量，用于离线检索测试。"""
 

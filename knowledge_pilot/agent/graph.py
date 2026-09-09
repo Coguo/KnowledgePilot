@@ -96,6 +96,9 @@ class ResearchState(TypedDict):
     plan: list[dict]
     # reducer 必须：research 节点在循环中多次写入，整体替换会丢前几轮证据。
     evidence: Annotated[list[EvidenceItem], operator.add]
+    # Phase 6：MCP 工具结果（截断后的文本块）跨轮累计，最后在 synthesize 渲染。
+    # 与 evidence 分开：MCP 输出是自由文本补充资料，不进 EvidenceItem/来源列表/KG。
+    notes: Annotated[list[str], operator.add]
     iteration: int
     max_iterations: int
     sufficient: bool
@@ -144,11 +147,20 @@ async def planner_node(
 
 
 async def research_node(
-    state: ResearchState, *, llm: LLMClient, search: SearchProvider, rag: object | None
+    state: ResearchState,
+    *,
+    llm: LLMClient,
+    search: SearchProvider,
+    rag: object | None = None,
+    mcp: object | None = None,  # Phase 6 打开的 MCPGateway；None 时行为与 Phase 5 一致
 ) -> dict:
     """跑 Agentic 工具循环收集证据；转发工具事件，丢弃过程 token 与内层 DoneEvent。
 
     每次迭代用 query + plan + 上一轮 evaluate 的 refined_instruction 组成研究指令。
+
+    mcp（Phase 6，默认 None 与 Phase 5 逐字节一致）：连接了工具时把 MCP 说明拼进
+    研究 system prompt，并通过 on_extra_tool_result 钩子在工具边界把 MCP 输出
+    落 notes（内层 LLM token 被丢弃，不落库则 MCP 结果到不了最终报告）。
     """
     writer = get_stream_writer()
     focus = state["query"]
@@ -163,6 +175,9 @@ async def research_node(
     evidence_new: list[EvidenceItem] = []
     seen: set[str] = set()
 
+    notes_new: list[str] = []
+    seen_notes: set[str] = set()
+
     def collect(results: list[SearchResult]) -> None:
         """在工具边界采集结构化证据（默认 None 时行为不变）。"""
         for r in results[:3]:
@@ -173,20 +188,36 @@ async def research_node(
                 EvidenceItem(source=r.url, title=r.title, snippet=r.content or r.snippet)
             )
 
+    def collect_note(name: str, text: str) -> None:
+        """MCP 工具结果落 notes：截断 + 本轮去重（供 synthesize 渲染补充资料）。"""
+        note = f"[工具 {name}] {_truncate(text, 600)}"
+        if note in seen_notes:
+            return
+        seen_notes.add(note)
+        notes_new.append(note)
+
+    # 研究导向提示：mcp 已连接工具时追加工具使用说明（教模型何时调用）。
+    step_prompt = RESEARCH_STEP_PROMPT
+    if mcp is not None and mcp.names():
+        step_prompt = f"{RESEARCH_STEP_PROMPT}\n\n{mcp.prompt_hint()}"
+
     async for evt in run_research(
         focus,
         llm=llm,
         search=search,
         rag=rag,
         on_search_results=collect,
-        system_prompt=RESEARCH_STEP_PROMPT,
+        system_prompt=step_prompt,
+        mcp=mcp,
+        on_extra_tool_result=collect_note,
     ):
         # 只转发工具事件：研究阶段的过程 token 与内层 DoneEvent 不应出现在最终流里。
         if isinstance(evt, (TokenEvent, DoneEvent)):
             continue
         writer(evt)
 
-    return {"evidence": evidence_new}  # 只返回本轮新增（reducer 负责累计）
+    # 只返回本轮新增（evidence/notes 的 reducer 负责跨轮累计）。
+    return {"evidence": evidence_new, "notes": notes_new}
 
 
 async def evaluate_node(state: ResearchState, *, llm: LLMClient, search: object = None, rag: object = None) -> dict:
@@ -231,6 +262,9 @@ async def synthesize_node(state: ResearchState, *, llm: LLMClient, search: objec
 
     kg_context（Phase 5，默认空）：非空时把「相关实体关系」块插在研究计划与
     已收集资料之间，让报告考虑结构化关系信息（与 RAG 的原始文本证据并存）。
+
+    notes（Phase 6，默认空）：非空时在用户内容末尾追加「工具补充资料（MCP）」块。
+    notes 按内容去重后渲染（跨研究轮可能重复）；为空则字符串与 Phase 5 逐字节一致。
     """
     writer = get_stream_writer()
     writer(StatusEvent(message="正在综合撰写报告…"))
@@ -243,6 +277,13 @@ async def synthesize_node(state: ResearchState, *, llm: LLMClient, search: objec
     if kg_context:
         user_content += f"{kg_context}\n\n"
     user_content += f"已收集资料（含来源）：\n{evidence_text or '（暂无）'}"
+
+    notes = _unique_notes(state.get("notes") or [])
+    if notes:
+        user_content += (
+            "\n\n工具补充资料（MCP，非网页搜索来源，仅供补充参考，不需要时可不引用）：\n"
+            + "\n\n".join(notes)
+        )
     prompt = [
         {"role": "system", "content": SYNTHESIZE_PROMPT},
         {"role": "user", "content": user_content},
@@ -305,19 +346,23 @@ def _build_app(
     checkpointer: object | None = None,
     kg_enabled: bool = False,
     kg_hops: int = 2,
+    mcp: object | None = None,
 ):
     """现建现编译（每次运行独立，天然并发隔离）。
 
     checkpointer：None → MemorySaver（内存）；Phase 4 传入 SqliteSaver 时持久化到磁盘。
     kg_enabled（Phase 5）：在 evaluate（充分）与 synthesize 之间插入 kg 节点；
-    禁用时图结构与 Phase 3/4 逐字节一致。
+    禁用时图结构与 Phase 3/4 逐字节一致。mcp（Phase 6，默认 None）：research 节点
+    透传 MCP 网关；None 时节点行为与 Phase 5 一致。
     """
     builder = StateGraph(ResearchState)
     builder.add_node(
         "planner",
         partial(planner_node, llm=llm, search=search, rag=rag, memory_context=memory_context),
     )
-    builder.add_node("research", partial(research_node, llm=llm, search=search, rag=rag))
+    builder.add_node(
+        "research", partial(research_node, llm=llm, search=search, rag=rag, mcp=mcp)
+    )
     builder.add_node("evaluate", partial(evaluate_node, llm=llm, search=search, rag=rag))
     builder.add_node("synthesize", partial(synthesize_node, llm=llm, search=search, rag=rag))
     if kg_enabled:
@@ -384,6 +429,7 @@ async def run_research_graph(
     checkpoint_db: str | None = None,
     kg_enabled: bool = False,
     kg_hops: int = 2,
+    mcp: object | None = None,  # Phase 6 MCPGateway；None 时行为与 Phase 5 逐字节一致
 ) -> AsyncIterator[object]:
     """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/kg/done）。
 
@@ -396,6 +442,9 @@ async def run_research_graph(
     kg_enabled（Phase 5，默认 False 行为与 Phase 4 逐字节一致）：在 evaluate 与
     synthesize 之间插入 kg 节点——从证据抽实体关系建内存图、按查询匹配实体并
     BFS 展开，把三元组注入报告 prompt。只在 graph 模式生效（loop 模式无 KG）。
+
+    mcp（Phase 6，默认 None 行为与 Phase 5 逐字节一致）：MCP 网关，research 节点
+    用它把 server 工具并入研究循环，MCP 输出经 notes 累加器在 synthesize 渲染。
     """
     # 1) 记忆召回：新研究开始前，看用户以前研究过什么。
     memory_context = None
@@ -409,6 +458,7 @@ async def run_research_graph(
         "query": query,
         "plan": [],
         "evidence": [],
+        "notes": [],
         "iteration": 0,
         "max_iterations": max_iterations,
         "sufficient": False,
@@ -439,6 +489,7 @@ async def run_research_graph(
                 checkpointer=saver,
                 kg_enabled=kg_enabled,
                 kg_hops=kg_hops,
+                mcp=mcp,
             )
             async for payload in _drive(app, state, config, sink):
                 yield payload
@@ -451,6 +502,7 @@ async def run_research_graph(
             checkpointer=None,
             kg_enabled=kg_enabled,
             kg_hops=kg_hops,
+            mcp=mcp,
         )
         async for payload in _drive(app, state, config, sink):
             yield payload
@@ -477,6 +529,26 @@ def _format_evidence(items: list[EvidenceItem]) -> str:
         snippet = item.snippet if len(item.snippet) <= 600 else item.snippet[:600] + "…"
         lines.append(f"[{i}] {item.title}\n    来源：{item.source}\n    {snippet}")
     return "\n\n".join(lines)
+
+
+def _truncate(text: str, max_len: int) -> str:
+    """截断到 max_len 字符并加省略号（notes/工具结果进 prompt 前的尺寸控制）。"""
+    text = text or ""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "…"
+
+
+def _unique_notes(notes: list[str]) -> list[str]:
+    """notes 保序去重（跨研究轮可能产生重复的 MCP 结果块）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for note in notes:
+        if note in seen:
+            continue
+        seen.add(note)
+        out.append(note)
+    return out
 
 
 def _build_kg_extraction_text(evidence: list) -> str:

@@ -19,6 +19,9 @@ dependencies = [
     "langgraph>=0.4",
     # Phase 4：SqliteSaver（图 checkpoint 跨重启持久化；懒导入失败回退 MemorySaver）
     "langgraph-checkpoint-sqlite>=1.0",
+    # Phase 6 MCP：stdio 子进程 server（FastMCP）+ client（ClientSession/stdio_client）。
+    # 锁 v1：v2（2026-07）是破坏性重写（FastMCP→MCPServer、字段蛇形化），本设计按 v1 稳定 API 写。
+    "mcp>=1.9,<2",
 ]
 
 [project.optional-dependencies]

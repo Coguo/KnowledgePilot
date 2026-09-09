@@ -12,7 +12,7 @@
 | 3 | LangGraph Agent 编排 | ✅ 完成 | 2026-08-29 |
 | 4 | Memory（研究历史 / 用户画像） | ✅ 完成 | 2026-09-01 |
 | 5 | Knowledge Graph / GraphRAG | ✅ 完成 | 2026-09-01 |
-| 6 | MCP | ⬜ 未开始 | - |
+| 6 | MCP | ✅ 完成 | 2026-09-06 |
 | 7 | 工程化（Redis / PostgreSQL / Model Gateway / Docker） | ⬜ 未开始 | - |
 
 ---
@@ -348,3 +348,63 @@ knowledge_pilot/
 - **`query_knowledge_graph` 工具**（研究循环内显式查图）——随工具数量增长再考虑 MCP 统一管理。
 - 规格 §13 **Agent Evaluation（图级离线评测）**：用数据回答「图 + 记忆相比单轮循环是否真的更好」。
 - 之后进入 Phase 6 MCP（工具数量增加时引入）。
+
+---
+
+## Phase 6 — MCP（2026-09-06）
+
+### 项目方向
+
+按规格 §11/§15 Phase 6 触发条件（「当工具数量越来越多，需要统一 Tool 接口」）引入 **MCP**。用户已确认三点：**① 扩真实工具再包 MCP**——先把已有但「被自动注入、LLM 不能主动调」的能力（记忆检索 / 论文检索）变成真实工具，再让 Agent 作为官方 `mcp` SDK 的 **client**，由 server 声明与调度；**② 实现用官方 mcp SDK（FastMCP server + stdio client）**；**③ 首批 = Memory + Papers 两个 server**。`search_web` 保持原生进程内工具不动。详细设计见 `docs/phase-6.md`。
+
+### 关键决策
+
+- **为什么 search_web 不迁 MCP**：它的执行深度耦合父进程——`run_tool` 拿到结构化 `SearchResult` 后触发证据采集钩子（→ EvidenceItem → 来源列表 + KG 抽取）与 RAG 向量增强（`rag.enrich_search`）。stdio MCP 只回文本，这两者会断。这是刻意、可讲的「为什么」（原则 5）。
+- **扩真实工具**：新增 `search_memory` / `recent_research`（读既有 SQLite 研究记忆，只读）与 `search_papers`（arXiv API，无 key）三个 LLM 可主动调用的真实工具，全部经 MCP 声明。
+- **notes 累加器（核心设计）**：research 节点内层 LLM token 被丢弃，MCP 文本输出若不落库，demo 就是空的。方案：MCP 结果经工具边界钩子（`on_extra_tool_result`，与 `on_search_results` 同构）截断去重后进 `ResearchState.notes`（`Annotated[list, operator.add]`），synthesize 末尾追加「工具补充资料（MCP，非网页搜索来源…）」块。**papers/memory 结果不进 evidence/来源列表/KG**——无可靠 source 槽位，硬造会污染来源语义与落库 sources（语义诚实）。
+- **向后兼容神圣**：`mcp_enabled=False`（默认）→ Agent 行为与 Phase 5 逐字节一致、旧测试零改动；MCP 只在 `agent_mode="graph"` 生效。`mcp=None` 时 `tools_effective is ALL_TOOLS`、system prompt 仍是同一常量。
+- **依赖锁 v1**：`mcp>=1.9,<2`——v2（2026-07）是破坏性重写（FastMCP→MCPServer、字段蛇形化）。网关只暴露 5 个方法（names/has/tool_schemas/prompt_hint/call），`call_result_to_text` 用 `getattr(result,"isError",getattr(result,"is_error",False))` 双兼容，升级爆炸半径被圈住。
+- **纯净分层保离线单测**：`mcp/__init__.py` 纯净（不 re-export gateway，否则 import 触发 mcp）；`convert.py`/`arxiv.py` 零 mcp 依赖，沙箱离线可测。api 顶层零 mcp 依赖，仅在 `mcp_enabled and graph` 时懒 import 网关。
+- **每请求 spawn server**：stdio client 是 async → 网关挂在 `event_stream` 的 `async with gw:` 里按请求开/关（sync DI 装不下），断开/异常都走 `__aexit__` 杀子进程。单 server 启动失败只告警 stderr 跳过（可选增强绝不挂研究）。
+
+### 技术栈
+
+| 层 | 选择 |
+|----|------|
+| 协议 | 官方 `mcp>=1.9,<2`（base dependencies）：FastMCP server + ClientSession/stdio_client |
+| 新模块 | `knowledge_pilot/mcp/`（convert.py / arxiv.py 纯函数；gateway.py 网关；servers/{memory,papers}.py 子进程 server） |
+| Agent | `loop.py` 可选 `tools/mcp/on_extra_tool_result` + `_dispatch_tool` 路由；`graph.py` `notes` 累加器 |
+| 配置 | `mcp_enabled`（默认 false）；`.env.example` 新增段 |
+| 前端 | tool_call 状态行按工具名展示（search_web 保留「🔍 正在搜索」，MCP 工具「🛠 正在调用 name」） |
+
+### 实现内容
+
+- `mcp/convert.py`：`to_openai_function_schema`（MCP inputSchema → OpenAI function schema，空/畸形给空骨架防拒收）+ `call_result_to_text`（CallToolResult → 文本，v1/v2 字段双兼容）。
+- `mcp/arxiv.py`：`build_arxiv_params` / `parse_arxiv_feed`（xml.etree，命名空间容错，URL 剥版本后缀）/ `search_arxiv`（httpx，不吞异常）/ `format_papers`。
+- `mcp/gateway.py`：`MCPServerSpec` + `MCPGateway`（AsyncExitStack 逐个 spawn `python -m` + 握手 + list_tools + 路由/schema/prompt_hint/call）+ `build_mcp_specs`（固定注册表：memory 带 `MEMORY_DB_PATH` 绝对路径 + papers）。
+- `mcp/servers/memory.py`：`search_memory`（store.search + build_memory_context）/ `recent_research`（store.recent）；参数夹紧；**绝不 print stdout**。`mcp/servers/papers.py`：`search_papers`（arXiv，异常转可读中文）。
+- `loop.py`：可选参数 + `_dispatch_tool`（search_web→原生 run_tool 不动；mcp 工具→`mcp.call` + 钩子；未知→ValueError）。
+- `graph.py`：`notes` 进 ResearchState；research_node 增 collect_note 闭包 + MCP prompt_hint 拼研究 system prompt；synthesize 末尾 notes 块（空则逐字节一致）；`run_research_graph(..., mcp=None)` 透传。
+- `config.py` + `.env.example`：`mcp_enabled`。
+- `api/main.py`：`get_chat_deps` mcp 可用性预检（清晰 500）；`event_stream` graph 分支 `async with gw:` 包 runner。前端 tool_call 按工具名显示 + 副标题 Phase 6。
+- `pyproject.toml`：base 依赖 `mcp>=1.9,<2`。
+
+### 测试
+
+- **新增（A/B 双轨）**：A 轨（零 mcp、本地即跑）`test_mcp_convert.py`（13）+ `test_mcp_arxiv.py`（15）+ `test_mcp_config.py`（3）；需 langgraph 的 `test_mcp_graph.py`（4：禁用逐字节一致 / 空网关=禁用 / schema 并入 + 工具事件 + notes 到报告 / 跨轮累计 + 不污染落库 sources）。B 轨（需 mcp）`test_mcp_servers.py`（3）+ `test_mcp_servers_stdio.py`（2，真实 stdio 子进程：握手/list_tools/call 命中）+ `test_api.py` 追加 1（graph+mcp_enabled → search_memory 的 tool_call 帧 + notes 进 synthesize）。
+- **本地已跑通**：convert + arxiv + config + 旧 config **= 40+ 通过**。graph/api/B 轨需 langgraph + mcp（用户 `pip install -e ".[dev,rag]"` 后 `-m pytest`）。
+- 语义红线测试：MCP 的 arXiv URL 不进 evidence → 不污染 memory 落库 sources（只含 search_web 的 stub URL）。
+
+### 已知问题
+
+- **v1 pin**：装依赖后第一件事 `pip show mcp` 确认 1.x；若只有 2.x → 网关已隔离，按 `MCPServer`+蛇形字段适配。
+- **每请求 spawn 2 解释器**：延迟 ~0.3–0.5s，进程复用留 Phase 7 工程化。
+- **MCP 结果是自由文本**：进 notes 不进 evidence/来源/KG；报告里「工具补充资料」中的论文 URL 不能当 `[n]` 引用（notes 引导语已注明可不引用）；结构化证据化留后续。
+- MCP 只在 graph 模式；arXiv 网络/HTTP 异常在 server 工具内转可读中文；search_papers 联网（无 key），smoke 依赖网络。
+- Windows 中文 stdio：子进程 env 显式 `PYTHONUTF8=1`（新旧 SDK 兼容）。
+
+### 下一步
+
+- **Agent Evaluation（规格 §13）**：planner/evaluate/图+记忆+MCP 效果建数据集，用数据回答各阶段是否「真的更好」——下一个大阶段前的验证。
+- **工程化 Phase 7**：MCP server 进程复用/常驻、Model Gateway、Docker；向量语义召回、记忆注入 research/synthesize、SqliteSaver 断点 + HITL 等累积项。
+

@@ -38,7 +38,7 @@
 </head>
 <body>
   <h1>🧭 KnowledgePilot · Research Chat</h1>
-  <p class="subtitle">Phase 5 · Knowledge Graph（实体关系抽取 + 注入报告）</p>
+  <p class="subtitle">Phase 6 · MCP（研究辅助工具：Memory / Papers，LLM 可主动调用）</p>
 
   <div id="log"></div>
 
@@ -148,11 +148,23 @@
         break;
       }
       case 'tool_call': {
-        let query = evt.arguments;
-        try { query = JSON.parse(evt.arguments).query ?? evt.arguments; } catch {}
+        // search_web（原生网页搜索）保留原「🔍 正在搜索：query」；
+        // MCP 辅助工具（memory/papers）按工具名展示（参数不总有 query，recent_research 只有 limit）。
+        const mcpTool = ['search_memory', 'recent_research', 'search_papers'].includes(evt.name);
+        let icon = mcpTool ? ('🛠 正在调用 ' + evt.name) : '🔍 正在搜索';
+        let detail = '';
+        if (evt.arguments) {
+          try {
+            const p = JSON.parse(evt.arguments);
+            detail = p.query
+              || (p.limit != null ? 'limit=' + p.limit : '')
+              || (p.max_results != null ? 'max_results=' + p.max_results : '');
+          } catch {}
+        }
+        if (!detail) detail = evt.arguments || '';
         const el = document.createElement('div');
         el.className = 'tool-status searching';
-        el.textContent = '🔍 正在搜索：' + query;
+        el.textContent = (icon + (detail ? '：' + detail : '')).trim();
         assistantEl.querySelector('.tools').appendChild(el);
         break;
       }

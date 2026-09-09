@@ -38,16 +38,32 @@ async def run_research(
     rag: object | None = None,  # RAGPipeline，透传给工具；None 时行为与 Phase 0 一致
     on_search_results: Callable[[list[SearchResult]], None] | None = None,
     system_prompt: str | None = None,
+    tools: list[dict] | None = None,  # 工具 schema 列表；None → 默认 ALL_TOOLS
+    mcp: object | None = None,  # 打开的 MCPGateway（Phase 6）；None 时行为与 Phase 5 一致
+    on_extra_tool_result: Callable[[str, str], None] | None = None,  # (工具名, 文本结果) 钩子
 ) -> AsyncIterator[object]:
     """运行一次研究会话，产出事件流（TokenEvent / ToolCallEvent / ToolResultEvent / DoneEvent）。
 
     on_search_results：每次 search_web 拿到结构化搜索结果后回调（Phase 3 图节点采证用，
     默认 None 行为不变）。system_prompt：覆盖默认系统提示词（研究节点用研究导向提示）。
+
+    mcp / tools / on_extra_tool_result（Phase 6，默认 None 时与 Phase 5 逐字节一致）：
+    - tools：非 None 时覆盖默认工具列表（ALL_TOOLS）；mcp 连接了工具时在其后追加 MCP schema。
+    - mcp：已打开的 MCP 网关，其声明的工具并入 LLM 可调用列表，执行走 _dispatch_tool。
+    - on_extra_tool_result：每次 MCP 工具执行后回调（name, 文本结果）——图节点用它把
+      MCP 输出落 notes（内层 LLM token 会被丢弃，不落库则 MCP 结果到不了最终报告）。
     """
     messages: list[dict] = [
         {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         {"role": "user", "content": query},
     ]
+
+    # 有效工具列表：mcp=None 且 tools=None 时仍是 ALL_TOOLS 本身（与 Phase 5 相等）。
+    base_tools = ALL_TOOLS if tools is None else tools
+    effective_tools = base_tools
+    mcp_names = list(mcp.names()) if mcp is not None else []
+    if mcp_names:
+        effective_tools = list(base_tools) + list(mcp.tool_schemas())
 
     final_answer = ""
     rounds = 0
@@ -58,7 +74,7 @@ async def run_research(
         content_parts: list[str] = []
         tool_calls: dict[int, dict] = {}
 
-        async for chunk in llm.stream_chat(messages, tools=ALL_TOOLS):
+        async for chunk in llm.stream_chat(messages, tools=effective_tools):
             if chunk.content_delta is not None:
                 content_parts.append(chunk.content_delta)
                 yield TokenEvent(chunk.content_delta)
@@ -92,12 +108,14 @@ async def run_research(
             arguments = json.loads(arguments_text or "{}")
 
             yield ToolCallEvent(name=name, arguments=arguments_text)
-            result = await run_tool(
+            result = await _dispatch_tool(
                 name,
                 arguments,
                 search=search,
                 rag=rag,
                 on_search_results=on_search_results,
+                mcp=mcp,
+                on_extra_tool_result=on_extra_tool_result,
             )
             yield ToolResultEvent(name=name, summary=_summarize(result))
 
@@ -110,6 +128,40 @@ async def run_research(
             )
 
     yield DoneEvent(content=final_answer)
+
+
+async def _dispatch_tool(
+    name: str,
+    arguments: dict,
+    *,
+    search: SearchProvider,
+    rag: object | None,
+    on_search_results: Callable[[list[SearchResult]], None] | None,
+    mcp: object | None,
+    on_extra_tool_result: Callable[[str, str], None] | None,
+) -> str:
+    """按工具名路由执行：search_web 走原生 run_tool；MCP 工具走网关。
+
+    search_web 刻意保持原生进程内执行（证据采集 on_search_results + RAG 增强
+    依赖父进程里的结构化 SearchResult，stdio MCP 只回文本会断这两者）。
+    MCP 工具返回自由文本，经 on_extra_tool_result 在工具边界采集（图节点落 notes），
+    否则文本只在本轮 tool message 给 LLM、进不了最终报告。
+    """
+    if name == "search_web":
+        # run_tool 的签名与 ValueError 契约原样保留（直调它的测试不受影响）。
+        return await run_tool(
+            name,
+            arguments,
+            search=search,
+            rag=rag,
+            on_search_results=on_search_results,
+        )
+    if mcp is not None and mcp.has(name):
+        text = await mcp.call(name, arguments)
+        if on_extra_tool_result is not None:
+            on_extra_tool_result(name, text)
+        return text
+    raise ValueError(f"未知工具: {name!r}")
 
 
 def _accumulate_tool_call(acc: dict[int, dict], delta: dict) -> None:

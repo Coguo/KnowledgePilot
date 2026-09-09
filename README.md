@@ -9,7 +9,8 @@
 - ✅ **Phase 3：LangGraph Agent 编排**（Planner 拆解 → 多轮研究 → 评估充分性 → 带引用报告；`AGENT_MODE=graph|loop`）
 - ✅ **Phase 4：Memory**（研究历史落库 → 同类问题自动召回复用；图 checkpoint 磁盘持久化 SqliteSaver；`MEMORY_ENABLED=true`）
 - ✅ **Phase 5：Knowledge Graph**（LLM 抽取实体/关系 → 手写内存图存储 → 关键词匹配 + BFS 检索 → 注入报告；`KG_ENABLED=true`）
-- ⬜ Phase 6+：MCP / 工程化
+- ✅ **Phase 6：MCP**（官方 mcp SDK client + FastMCP stdio server：`search_memory` / `recent_research` / `search_papers` 三个 LLM 可主动调用的只读研究辅助工具；`MCP_ENABLED=true`，仅 graph 模式）
+- ⬜ Phase 7+：工程化 / Agent Evaluation
 
 完整规划见 `AI_Research_Agent_Project_Context.md`（已 gitignore，本地保留）。
 
@@ -25,6 +26,9 @@ knowledge_pilot/
 ├── memory/        # Memory（Phase 4）：研究历史 SQLite 落库 + 关键词召回复用（纯 stdlib）
 ├── kg/            # Knowledge Graph（Phase 5）：LLM 抽取实体/关系 → 手写 dict 邻接图 →
 │   │              #   关键词匹配 + BFS 检索 → 注入报告（纯 stdlib，零依赖）
+├── mcp/           # MCP（Phase 6）：官方 mcp SDK client（网关）+ FastMCP stdio server
+│   │              #   （memory / papers 只读辅助工具），结果经 notes 进报告
+│   └── servers/   #   stdio 子进程 server：memory / papers（FastMCP，LLM 可主动调用）
 ├── rag/           # RAG：抓取→分块→Embedding→向量库→检索；Phase 2 叠加
 │   │              #   RecursiveChunker / BM25 Hybrid(RRF) / Reranker / QueryRewrite
 │   └── eval/      #   离线评测（Recall@K/MRR/Latency/TokenCost 矩阵 + CLI）
@@ -32,7 +36,7 @@ knowledge_pilot/
 └── web/           # 前端页面（单个 index.html）
 ```
 
-> 设计要点：**Agent 引擎与 UI 完全解耦**——它只产出事件流。网页版把事件映射为 SSE；未来做桌面版只需新增一个前端消费同一接口，不返工。RAG 通过 `search_web` 工具内部透明增强接入（自动抓取搜索结果建库并检索），LLM 无需学习新工具，事件协议不变。Phase 2 的 Hybrid / Reranker / Rewrite 均为可插拔组件（Protocol 接缝 + 配置开关），全部默认按评测推荐组合开启。Phase 3 引入 **LangGraph 编排**（`AGENT_MODE=graph`）：Planner 拆解研究问题 → Research 节点复用现有 Agentic 工具循环并采集证据 → Evaluate 判定充分性（不足则条件循环再研究）→ Synthesis 综合带引用报告；`AGENT_MODE=loop` 可切回 Phase 2 的单轮循环做对比。Phase 4 加入 **Memory**（`MEMORY_ENABLED=true`）：研究完成后把 query/plan/report/来源 落库到 SQLite，下次同类问题自动按关键词召回历史注入规划流程（前端显示「🧠 找到 N 条历史研究记录」），图 checkpoint 从 MemorySaver 升级为 SqliteSaver 跨重启持久化。Phase 5 加入 **Knowledge Graph**（`KG_ENABLED=true`，仅 graph 模式）：研究结束后用 LLM 从证据抽取实体/关系，构建**本次任务的内存知识图谱**（纯 stdlib 手写 dict 邻接，零新依赖），按研究问题关键词匹配实体 + BFS 展开子图，把命中三元组作为「相关实体关系」块注入综合报告（前端显示「🕸️ 知识图谱：N 实体 / M 关系」）；RAG 给原始文本证据、KG 给结构化关系信息，两者并存。
+> 设计要点：**Agent 引擎与 UI 完全解耦**——它只产出事件流。网页版把事件映射为 SSE；未来做桌面版只需新增一个前端消费同一接口，不返工。RAG 通过 `search_web` 工具内部透明增强接入（自动抓取搜索结果建库并检索），LLM 无需学习新工具，事件协议不变。Phase 2 的 Hybrid / Reranker / Rewrite 均为可插拔组件（Protocol 接缝 + 配置开关），全部默认按评测推荐组合开启。Phase 3 引入 **LangGraph 编排**（`AGENT_MODE=graph`）：Planner 拆解研究问题 → Research 节点复用现有 Agentic 工具循环并采集证据 → Evaluate 判定充分性（不足则条件循环再研究）→ Synthesis 综合带引用报告；`AGENT_MODE=loop` 可切回 Phase 2 的单轮循环做对比。Phase 4 加入 **Memory**（`MEMORY_ENABLED=true`）：研究完成后把 query/plan/report/来源 落库到 SQLite，下次同类问题自动按关键词召回历史注入规划流程（前端显示「🧠 找到 N 条历史研究记录」），图 checkpoint 从 MemorySaver 升级为 SqliteSaver 跨重启持久化。Phase 5 加入 **Knowledge Graph**（`KG_ENABLED=true`，仅 graph 模式）：研究结束后用 LLM 从证据抽取实体/关系，构建**本次任务的内存知识图谱**（纯 stdlib 手写 dict 邻接，零新依赖），按研究问题关键词匹配实体 + BFS 展开子图，把命中三元组作为「相关实体关系」块注入综合报告（前端显示「🕸️ 知识图谱：N 实体 / M 关系」）；RAG 给原始文本证据、KG 给结构化关系信息，两者并存。Phase 6 加入 **MCP**（`MCP_ENABLED=true`，仅 graph 模式，官方 `mcp` SDK 随 base 安装）：Agent 作为 mcp client，经 stdio 子进程连接 FastMCP server，把「结果本质是文本」的研究辅助能力变成 LLM 可主动调用的真实工具——`search_memory` / `recent_research`（只读历史库）+ `search_papers`（arXiv）；`search_web` 保持原生进程内工具（其证据采集 + RAG 增强需结构化结果，见 docs/phase-6.md）。MCP 自由文本结果经**工具边界 notes 累加器**去重截断，作为「工具补充资料（MCP）」块渲染进最终报告，**不进** evidence/来源列表/KG（语义红线）。
 
 ## 快速开始
 
@@ -57,6 +61,7 @@ copy .env.example .env     # Windows
 #   MEMORY_ENABLED=true  ← 开启 Memory（Phase 4：研究历史落库 + 同类问题复用 + checkpoint 持久化）
 #   KG_ENABLED=true      ← 开启 Knowledge Graph（Phase 5：抽实体关系建图，注入报告；仅 graph 模式生效）
 #   KG_HOPS=2            ← 图谱 BFS 展开层数
+#   MCP_ENABLED=true     ← 开启 MCP（Phase 6：search_memory/recent_research/search_papers 研究辅助工具，仅 graph 模式）
 #   RAG_ENABLED=true     ← 开启 RAG（需先安装 [rag] 依赖；首次会下载约 2GB 的 BGE-M3 模型）
 #   EMBEDDING_CACHE_DIR=data/models   ← 模型缓存目录
 #   RAG_CHUNK_STRATEGY=recursive  RAG_HYBRID_ENABLED=true  RAG_RERANK_ENABLED=true
@@ -82,7 +87,7 @@ uvicorn knowledge_pilot.api.main:app --reload
 pytest
 ```
 
-**旧测试 + Phase 3/4 graph 测试 + Phase 5 kg 测试**，全部离线运行（Fake LLM / Fake Embedding / 内存向量库 / tmp SQLite 注入，不联网）。未安装 `[rag]` 依赖时，rank-bm25 / chromadb / trafilatura 相关测试自动跳过（`pytest.importorskip`）；kg 的 store/extract/config 测试纯 stdlib 无需 langgraph。首次运行前先 `pip install -e ".[dev,rag]"` 安装 langgraph + langgraph-checkpoint-sqlite（Phase 3/4 依赖，base dependencies），graph/api/kg-graph 集成测试方可执行。
+**旧测试 + Phase 3/4 graph 测试 + Phase 5 kg 测试 + Phase 6 mcp 测试**，全部离线运行（Fake LLM / Fake Embedding / 内存向量库 / tmp SQLite 注入，不联网；MCP 的 convert/arxiv/config 纯 stdlib 即跑，真实 stdio 子进程测试只读本地库不联网）。未安装 `[rag]` 依赖时，rank-bm25 / chromadb / trafilatura 相关测试自动跳过（`pytest.importorskip`）；MCP 需 `mcp`（随 base 安装），未装时 `test_mcp_servers*.py` 整模块跳过。首次运行前先 `pip install -e ".[dev,rag]"` 安装 langgraph + langgraph-checkpoint-sqlite + mcp（Phase 3/4/6 依赖，base dependencies），graph/api/kg-graph/mcp-stdio 集成测试方可执行。测试矩阵详见 `docs/phase-6.md`。
 
 ### 离线评测（Phase 2）
 
@@ -100,8 +105,9 @@ python -m knowledge_pilot.rag.eval --dataset tests/fixtures/eval/small.json --to
 - ✅ **Phase 3**：LangGraph Agent 编排（Planner → 多轮研究 → 评估充分性 → 带引用报告）
 - ✅ **Phase 4**：Memory（研究历史落库复用 + Checkpoint 持久化）
 - ✅ **Phase 5**：Knowledge Graph（实体关系抽取 → 内存图 → 关键词+BFS 检索 → 注入报告）
-- ⬜ Phase 6：MCP
-- ⬜ Phase 7：工程化（Redis / PostgreSQL / Model Gateway / Docker）
+- ✅ **Phase 6**：MCP（扩真实工具再包 MCP：官方 mcp SDK client + FastMCP stdio server，Memory/Papers 研究辅助工具）
+- ⬜ Phase 7：工程化（MCP 进程复用 / Redis / PostgreSQL / Model Gateway / Docker）
+- ⬜ Phase 8+：Agent Evaluation（图级离线评测）
 
 ## 阶段文档
 

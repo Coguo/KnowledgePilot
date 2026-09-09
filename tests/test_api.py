@@ -5,6 +5,7 @@
 
 import json
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from knowledge_pilot.api import main as api_main
@@ -254,3 +255,65 @@ async def test_chat_graph_memory_event_frame(monkeypatch, tmp_path):
     types = [f["type"] for f in frames if f != "[DONE]"]
     assert "memory" in types
     assert frames[-1] == "[DONE]"
+
+
+async def test_chat_graph_mcp_mode_streams_tool_and_notes(monkeypatch, tmp_path):
+    """MCP 启用（graph 模式）：真实 stdio 子进程网关；search_memory 的 tool_call 帧
+    出现在 SSE 流、其文本结果经 notes 落进 synthesize 输入。需要 mcp 已装（随 base）。
+
+    search_papers（arXiv）会联网，故这里只驱动只读本地库的 search_memory——
+    papers 的 schema / 真实调用分别由 test_mcp_servers_stdio 与手工冒烟覆盖。
+    """
+    pytest.importorskip("mcp")  # B 轨：缺 mcp 依赖时干净跳过（不联网、需 langgraph）
+    monkeypatch.setattr(api_main.settings, "agent_mode", "graph")
+    monkeypatch.setattr(api_main.settings, "mcp_enabled", True)
+    monkeypatch.setattr(api_main.settings, "kg_enabled", False)
+    monkeypatch.setattr(api_main.settings, "memory_enabled", False)
+
+    # 预置一份研究历史，供真实 memory server 的 search_memory 命中（只读本地库）。
+    db_path = str(tmp_path / "memory.db")
+    store = create_memory_store(db_path)
+    store.save_run("RAG chunking 策略", report="fixed 与 recursive 对比", sources=[])
+    store.close()
+    monkeypatch.setattr(api_main.settings, "memory_db_path", db_path)
+
+    llm = FakeChatClient(script=[
+        ([], [{"name": "search_memory", "arguments": '{"query": "RAG chunking"}'}]),
+        (["完成"], []),
+    ])
+    llm.complete_script = [
+        '{"steps": [{"title": "A", "question": "子问题A", "purpose": "p"}]}',
+        '{"sufficient": true, "reason": "够", "gap": ""}',
+        "# 报告",
+    ]
+    app.dependency_overrides[get_chat_deps] = lambda: ChatDeps(
+        llm=llm, search=StubSearchProvider()
+    )
+    try:
+        async with await _client() as client:
+            async with client.stream(
+                "POST", "/api/chat", json={"message": "研究 RAG chunking"}
+            ) as resp:
+                assert resp.status_code == 200
+                frames = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        frames.append("[DONE]" if data == "[DONE]" else json.loads(data))
+    finally:
+        app.dependency_overrides.clear()
+
+    types = [f["type"] for f in frames if f != "[DONE]"]
+    assert "tool_call" in types
+    tool_calls = [f for f in frames if f.get("type") == "tool_call"]
+    assert any(tc.get("name") == "search_memory" for tc in tool_calls)
+    assert frames[-1] == "[DONE]"
+
+    # MCP 文本结果经 notes 进 synthesize 输入（done 内容是脚本固定的 REPORT）
+    synthesize_msg = next(
+        msg for msg in llm.seen_messages
+        if msg[0]["role"] == "system" and "研究报告撰写员" in msg[0]["content"]
+    )
+    content = synthesize_msg[1]["content"]
+    assert "工具补充资料（MCP，非网页搜索来源，仅供补充参考，不需要时可不引用）" in content
+    assert "[工具 search_memory]" in content

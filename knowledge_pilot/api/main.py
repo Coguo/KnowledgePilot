@@ -83,6 +83,20 @@ def get_chat_deps() -> ChatDeps:
     if settings.memory_enabled:
         memory = create_memory_store(settings.memory_db_path)
 
+    # Phase 6 MCP：stdio 子进程是 async 的，网关装不进 sync 依赖（事件流里按请求
+    # 开/关）。这里只做同步可用性预检（mcp 未装 → 清晰 500，避免流里崩）。
+    if settings.mcp_enabled and settings.agent_mode == "graph":
+        try:
+            import mcp  # noqa: F401 — 探测官方 mcp SDK（base 依赖）
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "MCP 已启用但缺少依赖 mcp：请先运行 "
+                    "pip install -e \".[dev,rag]\" 后重启服务。"
+                ),
+            ) from exc
+
     return ChatDeps(
         llm=llm,
         search=search,
@@ -108,28 +122,42 @@ async def index() -> FileResponse:
 async def chat(req: ChatRequest, deps: ChatDeps = Depends(get_chat_deps)) -> StreamingResponse:
     """以 SSE 流返回 Agent 事件（token / tool_call / tool_result / done）。"""
 
+    def _runner_for(mcp):
+        """按 agent_mode 构造研究 runner。MCP 只对 graph 模式生效（loop 是回归路径）。"""
+        if settings.agent_mode == "graph":
+            return run_research_graph(
+                req.message,
+                llm=deps.llm,
+                search=deps.search,
+                rag=deps.rag,
+                max_iterations=settings.agent_max_iterations,
+                memory=deps.memory,
+                memory_top_k=settings.memory_top_k,
+                checkpoint_db=settings.memory_checkpoint_db_path,
+                kg_enabled=settings.kg_enabled,
+                kg_hops=settings.kg_hops,
+                mcp=mcp,
+            )
+        return run_research(req.message, llm=deps.llm, search=deps.search, rag=deps.rag)
+
     async def event_stream():
         try:
-            # Phase 3 默认 graph（LangGraph 编排）；loop 为 Phase 0-2 单轮工具循环（回归对比）。
-            if settings.agent_mode == "graph":
-                runner = run_research_graph(
-                    req.message,
-                    llm=deps.llm,
-                    search=deps.search,
-                    rag=deps.rag,
-                    max_iterations=settings.agent_max_iterations,
-                    memory=deps.memory,
-                    memory_top_k=settings.memory_top_k,
-                    checkpoint_db=settings.memory_checkpoint_db_path,
-                    kg_enabled=settings.kg_enabled,
-                    kg_hops=settings.kg_hops,
-                )
+            # Phase 6 MCP：stdio client 是 async → 网关以 async with 按请求开/关
+            # （挂在生成器外层，yield 挂起时 with 栈仍在，断开/异常都走 __aexit__
+            # 杀子进程）。默认关 → gateway=None，runner 与 Phase 5 完全一致。
+            gateway = None
+            if settings.mcp_enabled and settings.agent_mode == "graph":
+                from knowledge_pilot.mcp.gateway import MCPGateway, build_mcp_specs
+
+                gateway = MCPGateway(build_mcp_specs(settings.memory_db_path))
+
+            if gateway is not None:
+                async with gateway as gw:
+                    async for event in _runner_for(gw):
+                        yield _sse_frame(event)
             else:
-                runner = run_research(
-                    req.message, llm=deps.llm, search=deps.search, rag=deps.rag
-                )
-            async for event in runner:
-                yield _sse_frame(event)
+                async for event in _runner_for(None):
+                    yield _sse_frame(event)
         finally:
             _close_rag(deps.rag)
             _close_memory(deps.memory)

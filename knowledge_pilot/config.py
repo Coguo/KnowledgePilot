@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     kg_enabled: bool = False  # 开启后：研究结束前从证据抽实体关系建图，注入报告 prompt
     kg_hops: int = 2  # 从匹配实体 BFS 扩展的边层数（1 层 = 直接相连关系）
 
+    # MCP（Phase 6，可选；stdio 子进程 server + 官方 mcp SDK client）
+    # 开启后 research 循环多出 search_memory/recent_research/search_papers（只读）。
+    # 默认关向后兼容（与 Phase 5 行为逐字节一致）；只在 AGENT_MODE=graph 生效。
+    mcp_enabled: bool = False
+
     # RAG Optimization（Phase 2，可选旋钮；全部可插拔，默认开启 Hybrid + Rerank）
     rag_hybrid_enabled: bool = True  # BM25 + 向量 RRF 混合搜索
     rag_rerank_enabled: bool = True  # bge-reranker-base CrossEncoder 精排
