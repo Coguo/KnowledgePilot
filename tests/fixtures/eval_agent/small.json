@@ -1,0 +1,57 @@
+{
+  "items": [
+    {
+      "query": "GraphRAG 是什么？它和经典 RAG 的主要区别是什么？知识图谱在其中扮演什么角色？",
+      "must_include": ["GraphRAG", "RAG", "知识图谱"],
+      "required_tools": ["search_web"],
+      "expected_tool_calls": [
+        {"name": "search_web", "arguments": {"query": "GraphRAG 与 RAG 的区别"}}
+      ],
+      "offline_profile": "ideal",
+      "aspects": [
+        {"name": "cites_sources", "question": "报告是否给出至少一个带 URL 的来源引用？"},
+        {"name": "defines_both", "question": "报告是否分别定义了 GraphRAG 与经典 RAG 并说明区别？"}
+      ]
+    },
+    {
+      "query": "如何把 RAG 的召回质量做扎实？请分层给出可落地的检索增强优化方案。",
+      "must_include": ["RAG", "召回"],
+      "required_tools": ["search_web"],
+      "expected_tool_calls": [
+        {"name": "search_web", "arguments": {"query": "RAG 召回质量优化方案"}}
+      ],
+      "offline_profile": "iterate_to_cap"
+    },
+    {
+      "query": "帮我找几篇 arXiv 上关于 agentic RAG 的最新论文，并总结每篇的要点。",
+      "must_include": ["agentic RAG", "arXiv"],
+      "required_tools": ["search_papers"],
+      "expected_tool_calls": [
+        {"name": "search_papers", "arguments": {"query": "agentic RAG"}}
+      ],
+      "offline_profile": "mcp_only_tool",
+      "aspects": [
+        {"name": "cites_papers", "question": "报告是否引用至少一篇带 URL 的 arXiv 论文？"}
+      ]
+    },
+    {
+      "query": "基于我上次对 RAG 优化的研究结论，进一步设计一套检索增强的评测指标体系。",
+      "must_include": ["RAG 优化", "评测指标"],
+      "required_tools": ["search_web"],
+      "expected_tool_calls": [
+        {"name": "search_web", "arguments": {"query": "RAG 检索增强评测指标"}}
+      ],
+      "offline_profile": "ideal",
+      "pre_seed": [
+        {
+          "query": "RAG 优化 的常用评测指标有哪些？",
+          "report": "上次研究总结：RAG 优化通常从召回（Recall@K/MRR）、生成质量与延迟成本三个维度评测。",
+          "sources": [
+            {"title": "RAG 评测体系", "url": "https://example.com/rag-eval"},
+            {"title": "Hybrid 检索", "url": "https://example.com/hybrid"}
+          ]
+        }
+      ]
+    }
+  ]
+}

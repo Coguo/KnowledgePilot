@@ -13,7 +13,8 @@
 | 4 | Memory（研究历史 / 用户画像） | ✅ 完成 | 2026-09-01 |
 | 5 | Knowledge Graph / GraphRAG | ✅ 完成 | 2026-09-01 |
 | 6 | MCP | ✅ 完成 | 2026-09-06 |
-| 7 | 工程化（Redis / PostgreSQL / Model Gateway / Docker） | ⬜ 未开始 | - |
+| 7 | Agent Evaluation（图级/全栈离线评测 + --real LLM judge） | ✅ 完成 | 2026-09-09 |
+| 8 | 工程化（MCP 进程复用 / Redis / PostgreSQL / Model Gateway / Docker） | ⬜ 未开始 | - |
 
 ---
 
@@ -407,4 +408,44 @@ knowledge_pilot/
 
 - **Agent Evaluation（规格 §13）**：planner/evaluate/图+记忆+MCP 效果建数据集，用数据回答各阶段是否「真的更好」——下一个大阶段前的验证。
 - **工程化 Phase 7**：MCP server 进程复用/常驻、Model Gateway、Docker；向量语义召回、记忆注入 research/synthesize、SqliteSaver 断点 + HITL 等累积项。
+
+---
+
+## Phase 7 — Agent Evaluation（2026-09-09）
+
+### 方向与诚实边界
+
+用户确认 Phase 7 = **Agent Evaluation（规格 §13）**，工程化顺延为 Phase 8。核心问题：**图 + 记忆 + KG + MCP（`all`）相比单轮手写循环（`loop`）是否真的更好**——在进工程化大阶段前用数据回答。
+
+**关键诚实边界（docs/phase-7.md 有完整口径）**：离线 LLM 是**脚本化的**（`ScriptedChatClient` 按 profile 预写每步返回）→ 五档变体在报告质量/覆盖上**不具区分度**（跑通路径的 canonical 报告覆盖率都=1）；离线区分的是**机制 + 系统指标**——脚本扰动下能否完成、工具调用轨迹、complete/stream 次数、error_rate、memory/kg 事件落点、延迟与 token 启发式成本。**质量与「哪个变体真的更好」的答案在 `--real`**：真实 DeepSeek 跑 + LLM judge 逐条判（rubric 判不出的相关性/引用合理性/答非所问）。这套「离线确定性 + --real」镜像 `rag/eval` 双模分层，自洽可讲。
+
+### 关键决策
+
+- **五档变体 = 对比轴**：`loop` / `graph` / `graph+memory` / `graph+kg` / `all`(=graph+memory+kg+mcp)。离线用脚本化 LLM + 确定性 rubric judge（零 key 可复现）；`--real` 换 CountingChatClient 包真实 ChatClient + 真实 search + DeepSeek LLM judge（独立 ChatClient，judge token 不计入 agent 计数）。
+- **评测只驱动 agent，不改 `graph/loop/events/tools`**；唯一前置小重构 `agent/__init__.py` 改 PEP 562 懒导出（`run_research_graph` 不再顶层 import）——否则离线纯模块在未装 langgraph 环境 import 即炸。全仓无消费方依赖顶层导出（全走子模块），安全。
+- **新包 `agent/eval/`**（镜像 rag/eval）：`dataset`（frozen dataclass + 位置化 ValueError + 白名单单一来源）/ `metrics`（词边界 CJK 守卫、工具选择=required∩requested、工具参数=贪心对齐+宽松相等+容忍多余键）/ `offline`（ScriptedChatClient、StubMCPGateway、canonical 报告、脚本 profile 库、组件工厂）/ `judge`（RubricJudge 确定性 + DeepSeekJudge 含 "json" 词、解析失败回退 rubric 不崩）/ `runner`（driver 懒导入、事件重建 transcript、聚合）/ `real` / `__main__`。**离线组件独立于 tests/fakes**（分层纪律，不 import tests）。
+- **Task Success = rubric 覆盖度判定（离线）+ DeepSeek judge（--real）**。rubric 判"期望要点到没到齐"；LLM judge 读完整报告按 `item.aspects` 逐条给判，回答"这报告真的算成功吗"。
+- **错误 = 跑通才算 ok**（loop/graph 都无异常哨兵）：抛异常或无 Done 记 error_kind，task_success=0、coverage=0。未知工具 ValueError 一路冒泡（已核验）→ `mcp_only_tool` 条目在非 mcp 档报错、`all` 档经桩网关跑通——离线演示**工具可用性轴**（docs 注明这是人为构造：真实模型不会调 tools= 未暴露的工具，崩溃轴归 error_rate、selection 只查"该调的调了没"）。
+- **memory 每 (variant, item) 独立全新库 + pre_seed 预置**（隔离保逐字节确定）；`--real` 用 tempfile 全新 db，**绝不动用户 MEMORY_DB_PATH**。kg 条目只在"会产生结构化证据的搜索"时进脚本（否则证据空 → kg 节点不消费 complete → 索引错位，synth 会吃到 kg JSON——修过）。
+- **graph 调用序（离线 canary 依据）**：planner complete(1) → research 每迭代内层 run_research 每轮一次 stream_chat → evaluate complete(1/迭代) → [evidence 非空时 kg complete(1)] → synthesize complete(1) → Done。iterate_to_cap 脚本长度 = `1 + max_iterations + 1 (+kg)`。warmup：graph 档先弃一次首跑（吸收懒导入/首编译），不计延迟。
+
+### 实现
+
+- `agent/eval/`：dataset / metrics / judge / offline / runner / real / __main__ + 包 re-export（`__init__.py` 24 个导出，real 不在此 re-export——需 key 由 CLI/B 轨懒加载）。
+- 数据集 `tests/fixtures/eval_agent/small.json`：4 条端到端研究任务——item1 ideal GraphRAG、item2 iterate_to_cap RAG 召回、item3 `mcp_only_tool` agentic RAG/arXiv（可用性轴）、item4 ideal memory（带 pre_seed 历史）。queries 都含 standalone "RAG" 供 kg 匹配。
+- CLI：`python -m knowledge_pilot.agent.eval --dataset ... [--variants loop,graph+memory,all] [--max-iterations 3] [--real] [--json-out docs/agent-eval-results.json]`。省略 `--variants` = 五档全跑（"all" 是档名不是哨兵，见 help）。
+
+### 测试（A/B 双轨，同 Phase 3-6 纪律）
+
+- **A 轨纯 stdlib（沙箱即跑，64 通过）**：dataset 加载/位置化 ValueError；metrics 词边界守卫（"RAG" 不命中 "RAGDOLL"、单中文字不命中、NFKC、宽松相等数值/子串、选择/参数贪心对齐）；judge rubric + DeepSeekJudge 脚本化 LLM（合法 JSON→aspects、不可解析→回退 rubric 不 raise、prompt 含 "json"）；offline ScriptedChatClient（complete 按序末条重复/参数两半累加/空脚本 ""/token 记账）、loop E2E、脚本长度 canary；runner loop 档聚合冒烟。
+- **B 轨 `pytest.importorskip("langgraph")`（需本地装依赖后跑）**：graph-drift canary（run_research_graph 消费的 complete/stream 与脚本长度严格一致——graph 改动会显式打破 eval 信任）；完整五档矩阵——mcp_only 条目的可用性轴、memory 档只在该档 mem_found>0、kg 档在证据条目上 complete_calls_avg 比 graph 高 0.75、字节确定性（monkeypatch perf_counter 两跑全等）。
+- 本地沙箱已验证：A 轨 63 通过 + CLI `--variants loop` 离线冒烟（输出见 docs/phase-7.md）；B 轨/完整矩阵需用户装依赖后 `-m pytest`。
+
+### 已知问题
+
+- graph/runner/B 轨需 langgraph（用户本地 `pip install -e ".[dev,rag]"` 后跑）；沙箱只能跑 A 轨 + loop-only。
+- `--real` 需 `.env` 的 `DEEPSEEK_API_KEY`，联网费 key（每条多一次 judge complete）；SEARCH_PROVIDER=stub 可纯 LLM+judge。
+- MCP 轴只在离线可完整演示：`--real` 不接线 MCP server（需独立进程），`all` 在 --real 下实际 = graph+memory+kg。
+- 离线 token 是启发式（字符数/2，与 rag/eval 同口径）；延迟含真实测量开销（graph 档 warmup 已弃首跑）。
+- 现有 bug 与累积项延续 Phase 6 的"下一步"：**工程化 Phase 8**（MCP 进程复用/常驻、Model Gateway、Docker），期间可补向量语义召回、记忆注入 research/synthesize、`query_knowledge_graph` 工具、GraphRAG 跨任务积累。
 
