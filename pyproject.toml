@@ -42,6 +42,21 @@ rag = [
 [tool.setuptools.packages.find]
 include = ["knowledge_pilot*"]
 
+# Phase 10：前端拆成了多文件，web/ 下的静态资源必须随包分发，否则 `pip install`
+# 装出来的 wheel 里根本没有 index.html / css / js，`GET /` 直接 404。
+#
+# **不要写成 `"web/**/*"`**：setuptools 的 glob 在部分实现下要求 `**/` 至少匹配
+# 一层目录，`web/index.html` 会因此被漏掉 —— 而漏掉的文件在本地跑 `pytest` 时
+# 完全正常（源码树里文件就在那儿），只在装包后暴露。所以这里逐个模式写死，
+# 并由 `tests/test_packaging.py` 断言这四条都在。
+[tool.setuptools.package-data]
+knowledge_pilot = [
+    "web/*.html",
+    "web/css/*.css",
+    "web/js/*.js",
+    "web/js/*/*.js",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

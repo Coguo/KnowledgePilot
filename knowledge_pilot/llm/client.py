@@ -3,50 +3,18 @@
 - 使用 `openai` SDK 对接 OpenAI 兼容接口（DeepSeek / Qwen 等均兼容）。
 - 对外只暴露流式增量（内容 / tool_call），由上层负责拼装完整消息。
 - 不引入 LangChain / LangGraph：Phase 0 目标就是手写 tool-calling 循环。
+
+`StreamChunk` / `LLMClient`（接口定义）已迁到 `llm/protocol.py`（纯 stdlib，
+Model Gateway 与离线测试在无 openai 环境也能 import）；这里 re-export，保持全仓
+既有导入路径不变。
 """
 
-from dataclasses import dataclass
-from typing import Any, AsyncIterator, Protocol
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
 from knowledge_pilot.config import Settings
-
-
-@dataclass
-class StreamChunk:
-    """一次流式回调携带的增量。content 与 tool_call 至少有一个非空。"""
-
-    content_delta: str | None = None
-    # tool_call 增量：{"index", "id"?, "name"?, "arguments"?}，字段可为 None，
-    # 由上层按 index 累加拼出完整 tool_call。
-    tool_call_delta: dict[str, Any] | None = None
-
-
-class LLMClient(Protocol):
-    """LLM 客户端接口（测试时用 Fake 实现注入）。"""
-
-    model: str
-
-    async def stream_chat(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        ...
-
-    async def complete(
-        self,
-        messages: list[dict],
-        *,
-        max_tokens: int | None = None,
-        response_format: dict | None = None,
-    ) -> str:
-        """非流式补全：给定消息返回完整文本（Query Rewrite / Planner / Evaluate 用）。
-
-        response_format 透传给 OpenAI 兼容接口（如 {"type": "json_object"}）。
-        """
-        ...
+from knowledge_pilot.llm.protocol import LLMClient, StreamChunk
 
 
 class ChatClient:
@@ -109,3 +77,30 @@ class ChatClient:
             response_format=response_format,
         )
         return resp.choices[0].message.content or ""
+
+    async def stream_complete(
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int | None = None,
+        response_format: dict | None = None,
+    ) -> AsyncIterator[str]:
+        """`complete()` 的流式孪生：逐段 yield 文本增量（Phase 9 报告逐字输出）。
+
+        传参与 `complete()` 逐个对齐（含 max_tokens/response_format 无条件下发），
+        唯一差别是 `stream=True`；不传 tools——`complete()` 也不传，两者 JSON body
+        除 `stream` 外完全一致。首个异常直接上抛（不重试：已吐过的字重来会重复）。
+        """
+        stream = await self._client.chat.completions.create(
+            model=self._settings.deepseek_model,
+            messages=messages,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue  # 跳过 usage 等无 choices 的收尾块
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content

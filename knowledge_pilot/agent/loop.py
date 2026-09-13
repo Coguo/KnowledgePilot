@@ -14,10 +14,12 @@ from knowledge_pilot.agent.events import (
     ToolResultEvent,
 )
 from knowledge_pilot.agent.tools import ALL_TOOLS, run_tool
-from knowledge_pilot.llm.client import LLMClient
+from knowledge_pilot.llm.protocol import LLMClient
 from knowledge_pilot.search.base import SearchProvider, SearchResult
 
 # 工具调用轮次上限：防止模型陷入无限调用工具的循环（Phase 0 简单兜底）。
+# Phase 9：本常量仍是**默认值**（调用方不传 max_tool_rounds 时生效），可被运行期覆盖
+# 成 config.agent_max_tool_rounds 或请求级值；保留常量是因为有测试直接 import 它。
 MAX_TOOL_ROUNDS = 4
 
 SYSTEM_PROMPT = (
@@ -41,6 +43,7 @@ async def run_research(
     tools: list[dict] | None = None,  # 工具 schema 列表；None → 默认 ALL_TOOLS
     mcp: object | None = None,  # 打开的 MCPGateway（Phase 6）；None 时行为与 Phase 5 一致
     on_extra_tool_result: Callable[[str, str], None] | None = None,  # (工具名, 文本结果) 钩子
+    max_tool_rounds: int | None = None,  # Phase 9：覆盖 MAX_TOOL_ROUNDS；None → 用常量
 ) -> AsyncIterator[object]:
     """运行一次研究会话，产出事件流（TokenEvent / ToolCallEvent / ToolResultEvent / DoneEvent）。
 
@@ -67,6 +70,8 @@ async def run_research(
 
     final_answer = ""
     rounds = 0
+    # None → 常量（与 Phase 0-8 逐字节一致）；调用方覆盖时以覆盖值为准。
+    rounds_limit = MAX_TOOL_ROUNDS if max_tool_rounds is None else max_tool_rounds
 
     while True:
         rounds += 1
@@ -97,7 +102,7 @@ async def run_research(
             break
 
         # 2.5) 达到轮次上限仍请求工具 → 兜底结束，避免无限循环。
-        if rounds >= MAX_TOOL_ROUNDS:
+        if rounds >= rounds_limit:
             break
 
         # 3) 执行工具，把结果作为 tool message 回填，进入下一轮。
@@ -157,7 +162,11 @@ async def _dispatch_tool(
             on_search_results=on_search_results,
         )
     if mcp is not None and mcp.has(name):
-        text = await mcp.call(name, arguments)
+        try:
+            text = await mcp.call(name, arguments)
+        except Exception as exc:  # noqa: BLE001 — MCP 是可选的补充资料：失败不崩整个研究，
+            # 转为可读文本回填给模型（模型可据此调整），而不是让工具轮异常中断。
+            return f"（MCP 工具 {name} 暂不可用：{type(exc).__name__}: {exc}）"
         if on_extra_tool_result is not None:
             on_extra_tool_result(name, text)
         return text

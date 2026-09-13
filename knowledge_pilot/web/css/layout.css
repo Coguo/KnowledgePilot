@@ -1,0 +1,124 @@
+/* 三栏外壳与顶栏(设计稿 §5)。
+
+   ┌──────────┬──────────────────────┬────────────┐
+   │ Sidebar  │   Knowledge Graph    │ Inspector  │
+   └──────────┴──────────────────────┴────────────┘
+
+   **右栏是常驻的一列,不是「选中节点才长出来」** —— 设计稿 §17/§31 三栏一直在。
+   上一版是两栏 + 一个 `hidden` 的 `#panel`(选中节点才把它塞进网格,靠
+   `.with-panel` 切 `grid-template-columns`)。那种做法有两个毛病:一是没选中节点时
+   中央画布会占满整个宽度,选中后又被挤窄一次 —— 每点一个节点画面就重新流式布局一遍;
+   二是「没有选中」与「面板不可用」在视觉上无法区分。改成常驻列之后,`views/inspector.js`
+   的 `close()` 换成一个占位提示,而不是把列藏起来。 */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--side-w) minmax(0, 1fr) var(--insp-w);
+  height: 100vh;
+  /* 两条列分隔条是绝对定位的子元素(见下面),所以这里是它们的定位参照。 */
+  position: relative;
+}
+
+/* 中间列是一个 flex 列,里面**两个**孩子:画布(`#stage`)与停靠在底部的 AI 助手
+   (`#assistant`)。画布 `flex: 1` 吃掉剩下的高度,所以助手占多高,画布就少多高 ——
+   「助手会不会盖住画布」这个问题在布局层就消失了,不需要 z-index,也不需要
+   给画布留 padding(浮层方案两样都要,且每次改尺寸都要重算一次)。
+   两个都写了 `min-height: 0`:flex 子项默认 `min-height: auto`,内容一多就宁可
+   撑破父级也不收缩,那样助手会把画布挤到 0 高。 */
+main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+#stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---- 可拖拽的列分隔条 ----
+   左右两栏的宽度由用户自己定(行为在 `js/resizer.js`)。宽度**不是**在这里定的:
+   拖动时是往 `.app` 上写**内联** CSS 变量(`--side-w` / `--insp-w`),写在元素上的值
+   在里面一层,所以 1280 那个断点重定义在 `:root` 上的值盖得住它 —— 用户拖过的宽度
+   在每一档屏幕上都算数,而那正是他拖它的意思。
+
+   **这条线是常驻的,而且它就是栏的分界线本身。** 上一版把它做成「悬停才出现的 1px
+   细线」,同时 `#sidebar` / `#panel` 各自还有一条 `border-right` / `border-left` ——
+   于是接缝上同时有两样东西:栏的静态边框、以及一条只在鼠标移上去时才亮起来的线。
+   用户报的是「可调整的线与实际呈现的线存在一定的距离」,说的就是这两条对不上
+   (画布自己的滚动条就在它左边 9px 处,那条灰条看起来更像「线」)。
+
+   现在只剩这一条:栏自己的静态边框在 css/sidebar.css / inspector.css 里撤掉,
+   这条线常驻在**精确的边界**上,悬停/聚焦时变成主色 —— 「你能拖的那条线」与
+   「你看到的那条线」从设计上就是同一条,不再需要用户去猜哪条才算。
+
+   **上一轮只修了一半**(走查反馈 ④ 右栏那条仍偏左 9px):当时把「线居中在命中区里」
+   钉住了(`::after` 的 `left: 4px` + `width: 1px`),却没钉「命中区居中在**边界**上」。
+   两条规则是镜像的,而 `translateX(-50%)` 只对**左锚定**那条成立:
+   左栏 `left: var(--side-w)` + `-50%` → 命中区中心 = 边界 ✓;
+   右栏 `right: var(--insp-w)` + `-50%` → `right` 量的是**右边缘**的距离,再往左挪 4.5px
+   等于把整个命中区(连同里面那条线)多推 9px —— 于是那条线落在画布滚动条上,
+   「能拖的线」与「真正被拖动的分界」差了 9px,而拖动时宽度确实是按分界算的,
+   手感上就是「线在左边一点」。右锚定要用 `+50%`。
+
+   **命中区仍然有 9px**:一条 1px 的线没人点得中。多出来的那 8px 平分到边界两侧
+   (9/2 = 4.5,与 `::after` 的 `left: 4px` + 半个线宽重合),既不吃左栏也不吃右栏。
+   `tests/test_api.py::test_panel_divider_is_one_line_on_the_column_edge` 把这两半都
+   算出来断言 —— 只钉其中一半,漏掉的那一半就是这次的 9px。 */
+.col-resizer {
+  position: absolute; top: 0; bottom: 0; width: 9px;
+  /* 盖在栏内容之上,但要留在 1000 以下的浮层右栏(z-index 20)下面。 */
+  z-index: 15;
+  cursor: col-resize;
+  /* 拖动时别让浏览器把它当成滚动(触屏)或文本选择(鼠标)。 */
+  touch-action: none; user-select: none;
+  background: transparent;
+}
+
+/* 常驻的 1px 线,居中在 9px 命中区里(4 + 1 + 4)。`left: 4px` 让它落在
+   `translateX(-50%)` 之后的边界上,与网格轨道分界**逐像素重合**。 */
+.col-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px;
+  background: var(--line); transition: background .12s;
+}
+
+.col-resizer:hover::after,
+.col-resizer:focus-visible::after { background: var(--accent); }
+/* 焦点环在这一条上没有意义(它本来就只有 1px 宽),把高亮交给上面那条线。 */
+.col-resizer:focus-visible { outline: none; }
+
+/* 符号跟着锚定边变:`left` 锚定往左挪半个命中区,`right` 锚定往**右**挪半个。
+   两边都写成 `-50%` 是上一版的 bug(右栏那条偏左 9px)—— 见上面那段算术。 */
+#rz-side { left: var(--side-w); transform: translateX(-50%); }
+#rz-insp { right: var(--insp-w); transform: translateX(50%); }
+
+/* ---- 顶栏(设计稿 §26) ----
+   顶栏属于**图谱视图**,由 `views/graph.js` 的 `header()` 拼出来,不是外壳的一部分 ——
+   换了视图(我的探索 / 设置)它就该换成那个视图自己的头。 */
+.topbar {
+  display: flex; align-items: center; gap: 10px; padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.topbar h2 { font-size: 15.5px; margin: 0; flex: 1; min-width: 0;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- 1280 断点(设计稿 §30 的最小支持宽度 1280×720)----
+   三栏是 248 + 画布 + 300,1280 宽时画布只剩 732 —— 那一档下把两侧各收一点,
+   画布回到 ~800。**只改宽度,不改结构**:设计稿 §30 说「侧栏可收起、Inspector
+   可折叠」,但收起是一个需要按钮 + 状态 + 记住偏好的交互,而它在 1280 这一档的
+   收益只是把 732 变成 800。真正的取舍在 1000 那一档(下面),那里 Inspector
+   已经不是「窄」而是「挤没了」,必须换结构。 */
+@media (max-width: 1280px) {
+  :root { --side-w: 212px; --insp-w: clamp(272px, 21vw, 300px); }
+}
+
+/* 窄屏:右栏改浮层盖上来 —— 常驻列在 1000px 以下会把画布挤到没法看,
+   而画布是这个页面的主体(设计稿 §30「图谱区域优先保证空间」)。
+   `position: fixed` 让它脱离网格流,网格自然回落到两列。
+   顺序上它在文件末尾,覆盖力与拆分前一致。 */
+@media (max-width: 1000px) {
+  /* 侧栏宽走 `var(--side-w)` 而不是写死 240:写死会让 1000 与 1001 两个宽度上
+     侧栏**倒挂**(窄的那一屏反而更宽)。这里只要把右栏从列里拿出去就行。 */
+  .app { grid-template-columns: var(--side-w) minmax(0, 1fr); }
+  #panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw);
+           box-shadow: var(--sh-3); z-index: 20;
+           /* 这一档 `#rz-insp` 已经不显示了(下面 `display: none`),它原本常驻的那条
+              分界线也就跟着没了 —— 浮层自己的左边缘需要一条边框,否则面板与它盖住的
+              画布之间没有任何分界。这也是 `#panel` 唯一保留边框的场合。 */
+           border-left: 1px solid var(--line); }
+  /* 右栏这一档已经不是「一列」了,而是一条盖在画布上的浮层 —— 它的左边缘不再由
+     `--insp-w` 决定。分隔条留着只会拖出一个跟它无关的宽度。 */
+  #rz-insp { display: none; }
+}

@@ -29,6 +29,15 @@ SCRIPT_SEARCH = [
     ([], [{"name": "search_web", "arguments": '{"query": "资料"}'}]),
     (["本轮研究总结。"], []),
 ]
+# 两轮研究**各**调一次 search_web（跨轮事件顺序测试用）。FakeChatClient 用同一个
+# calls 计数器跨 research_node 调用累加，故每轮都要在脚本里显式给一条工具调用；
+# 只靠"越界重复最后一条"会让第二轮拿到纯文本，退化成零工具调用。
+SCRIPT_SEARCH_TWO_ROUNDS = [
+    ([], [{"name": "search_web", "arguments": '{"query": "资料"}'}]),
+    (["第一轮研究总结。"], []),
+    ([], [{"name": "search_web", "arguments": '{"query": "补充资料"}'}]),
+    (["第二轮研究总结。"], []),
+]
 
 
 async def _run(query, llm, *, max_iterations=3):
@@ -173,7 +182,8 @@ async def test_evidence_collected_from_search_results():
 async def test_events_do_not_cross_rounds():
     """事件不串轮：本轮 eval 后、下一轮 research 的 tool_call 之前，顺序正确。"""
     llm = _fake(
-        [PLANNER_JSON, EVAL_INSUFFICIENT, EVAL_SUFFICIENT, REPORT], SCRIPT_SEARCH
+        [PLANNER_JSON, EVAL_INSUFFICIENT, EVAL_SUFFICIENT, REPORT],
+        SCRIPT_SEARCH_TWO_ROUNDS,
     )
     events = await _run("研究问题", llm)
 

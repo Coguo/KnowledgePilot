@@ -1,0 +1,43 @@
+/* 「对话」页(设计稿 §6 的导航第二项)—— 对 `/api/chat` 的一次性研究问答。
+   它是**主区里的一个视图**,不是第四栏:`#stage` 已经是 flex 列,这里再套一层
+   撑满剩余高度的容器。气泡样式在 base.css(与浮动助手共用)。 */
+
+/* **铺满中间整列。** 这里原本有一道 `max-width: 860px; margin: 0 auto` —— 宽屏上正文
+   缩成中间一条、两侧大片空着,用户的原话是「并未占全整个中间的屏幕」。列宽本身由外壳
+   的网格决定(见 `layout.css`),想改就去拖那两条分隔条,`max-width` 只会跟它打架。
+
+   `overflow-y` 放在**这一层**是这次改动的关键:此前滚动在 `.r-msgs` 那一小块上,于是
+   「正文超过一屏」时是在一个小抽屉里滚,而用户要的是整列一起滚下去接着读。 */
+.research { flex: 1; min-height: 0; display: flex; flex-direction: column;
+            padding: 14px 20px 0; gap: 10px;
+            overflow-y: auto;
+            /* 输入框是吸底浮层:滚到最底时最后一行正文要停在它**上面**而不是被它盖住。
+               `scroll-padding-bottom` 只有 `scrollIntoView` 会算进去,所以
+               `views/chat.js` 的 `scrollToEnd()` 不能用「直接把 scrollTop 拉到底」。 */
+            scroll-padding-bottom: 78px; }
+
+/* 过程日志(「正在检索…」)。**放在消息上方**而不是下方 —— 它就长在用户视线的
+   落点上,而滚到底看最新一条时,下面的东西正好被输入框压住。
+   很长时自己滚,不把消息区挤没。这一个是**有意的**例外:它是一条约几行的状态栏,
+   跟正文一起滚会让「它现在在干什么」离开视线。 */
+.r-log { max-height: 88px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.r-log:empty { display: none; }
+
+/* 消息区**不再自己滚**(此前是 `flex: 1; min-height: 0; overflow-y: auto`)。
+   它只负责把内容撑开,高度由内容决定,滚动交给 `.research` 那一层。 */
+.r-msgs { display: flex; flex-direction: column; gap: 11px; }
+
+/* 输入框**吸在列底**:内容短时靠 `margin-top: auto` 顶到底部(跟普通聊天一样),
+   内容长时靠 `sticky` 钉住 —— 两件事都只需要这一处。
+   必须有不透明底色:正文从它背后滚过去时,半透明会把两行字叠成一片。
+   上边框同理,它让「正文在下面继续」看起来是有意的,而不是被裁掉。 */
+.r-composer { position: sticky; bottom: 0; margin-top: auto;
+              display: flex; gap: 8px;
+              padding: 10px 0 18px;
+              background: var(--bg);
+              border-top: 1px solid var(--line-soft); }
+.r-composer input {
+  flex: 1; min-width: 0; padding: 10px 13px; font: inherit;
+  border: 1px solid var(--line); border-radius: var(--r-inp);
+}
+.r-composer input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }

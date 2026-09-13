@@ -1,0 +1,176 @@
+/* 右栏 Node Inspector(设计稿 §17~§20)。
+   **这一列常驻**,没选中节点时显示占位提示而不是折叠 —— 见 layout.css 顶部注释。
+
+   **这里没有对话输入框** —— 第 6 阶段起对话收敛到左下角的浮动助手
+   (`views/assistant.js`)。原来那套 `#chat` / `#composer` 规则随代码一起删掉了,
+   气泡样式搬去 base.css(它与「对话」页共用);留着死规则比删掉更糟:
+   下一个人会以为右栏还能聊天。 */
+
+#panel {
+  /* 同样**不写 `border-left`**:这条缝归 `css/layout.css` 里常驻的 `#rz-insp::after`。
+     唯一保留边框的场合是 1000px 以下 —— 那一档右栏变成浮层、分隔条被 `display: none`
+     掉了,分界线没有别的来源(见 layout.css 末尾那个断点)。 */
+  background: var(--card);
+  display: flex; flex-direction: column; min-height: 0;
+}
+
+/* 占位态。`.empty` 是通用的居中空态,这里是侧栏里的一列,要的是「安静地待着」
+   而不是「大声说没有内容」—— 所以单独一套,不复用 `.empty`。 */
+.p-empty { margin: auto; text-align: center; color: var(--ink-3);
+           font-size: 12.5px; padding: 24px 22px; }
+.p-empty .pe-ic { font-size: 22px; color: var(--line); display: block; margin-bottom: 8px; }
+
+#panel .p-head { padding: 15px 17px 11px; border-bottom: 1px solid var(--line-soft); }
+#panel .p-title { font-size: 15px; font-weight: 700; margin: 0 0 7px;
+                  display: flex; align-items: flex-start; gap: 8px; }
+#panel .p-title span:first-child { flex: 1; min-width: 0; }
+.p-close { border: 0; background: transparent; color: var(--ink-3); font-size: 15px;
+           padding: 0 4px; line-height: 1; border-radius: 6px; }
+.p-close:hover { color: var(--ink); background: #f4f7fc; }
+.p-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.p-actions { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 17px;
+             border-bottom: 1px solid var(--line-soft); }
+.reason {
+  margin: 11px 17px 0; padding: 10px 12px; border-radius: 11px;
+  background: var(--warn-soft); border: 1px solid #f0dda6; color: var(--warn-ink);
+  font-size: 12.5px;
+}
+.reason strong { display: block; margin-bottom: 2px; }
+#panel .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 13px 17px; }
+
+/* ---- 生成阶段的整块(走查反馈 ④:从中间列搬来) ----
+   **搬过来的理由**:中间列没有滚动容器(`#stage` 没有 `overflow`,`.app` 又钉着
+   `100vh`)—— 卡片里那份逐字研究报告一超过视口,下半截与按钮就永远看不到,页面也不会
+   滚(用户的原话是「长度超过之后页面不匹配」)。右栏本来就是「一列 + 一个 `.scroll`」
+   的结构,长内容在栏内滚,页面比例不动。
+
+   卡片在这一栏里**不再是一张浮卡片**:`max-width: 780px` / 圆角 / 阴影那套是给中央
+   那 780px 留白用的,现在它是整栏的一页,四样一起去掉。`padding` 归零是因为它外面
+   套着 `.scroll`(上面那条自带 `padding: 13px 17px`)—— 两边都留,卡片左右各空 34px。 */
+#panel .gen-card { padding: 0; border: 0; border-radius: 0;
+                   box-shadow: none; max-width: none; margin: 0; background: transparent; }
+.gen-card h3 { margin: 0 0 4px; font-size: 15px; }
+.gen-card .q { color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
+#gen-log { margin-top: 14px; display: flex; flex-direction: column; gap: 3px; }
+/* 生成按钮铺满整栏 —— 它是这一页唯一的主动作。 */
+#panel .gen-card .btn.primary { width: 100%; }
+/* `.p-actions` 在别处是「标题条下面的一条按钮带」(自带 padding + 下边框);
+   在卡片里它是按钮自己的一行,两样都不要。 */
+#panel .gen-card .p-actions { padding: 12px 0 0; border: 0; }
+
+/* 逐字报告**保留**自己的滚动盒:`views/graph.js` 每收一个 token 就写一次
+   `bodyEl.scrollTop = bodyEl.scrollHeight`(流式跟随)——容器没有滚动条的话那行是
+   空操作,报告会涨出栏外。 */
+#gen-body { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 12px;
+            font-size: 13.5px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap;
+            word-break: break-word; }
+/* ---- 「讲解记录」页(走查反馈 ④) ----
+   右栏里的**一页**(不是浮层、不进 hash):大标题 + 只读的讲解记录 + 可编辑的
+   「我的笔记」。返回入口在标题条上,和节点页的 ✕ 占同一个位置 —— 两页的头都是
+   「一条 + 一个动作」,换页时那一行不会跳。 */
+.p-back { border: 0; background: transparent; color: var(--accent); font-size: 12.5px;
+          padding: 2px 6px; border-radius: 7px; }
+.p-back:hover { background: var(--accent-soft); }
+/* 大标题。比节点页的 `.p-title` 大一档 —— 这一页是「一次完整的阅读」,
+   而节点页是一条详情;同一个字号会让两页看起来是同一个层级。 */
+.note-title { font-size: 17px; margin: 2px 0 12px; }
+.note-exp { margin-bottom: 16px; }
+.note-edit-sec .btn { display: block; width: 100%; }
+/* 等宽 + 可纵向拽开:笔记是给用户写字的地方,比例改不了（右栏宽度固定）但高度能拉。
+   `resize: vertical` 是这里唯一合理的那个方向 —— 横向拽会撑破右栏。 */
+.note-edit { width: 100%; min-height: 160px; resize: vertical;
+             font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+             line-height: 1.6; padding: 8px 10px; border-radius: 10px;
+             border: 1px solid var(--line); background: #fff; color: var(--ink); }
+.note-edit:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.note-tip { text-align: left; padding: 6px 0 8px; }
+/* 保存结果那一行。三种状态都**必须说出来**:「已保存」不说,用户不知道该不该再点
+   一次;失败不说,用户以为存上了(那是这个功能最坏的一种失败)。 */
+.note-msg { font-size: 12.5px; margin: 0 0 8px; }
+.note-msg.ok { color: var(--ok); }
+.note-msg.bad { color: var(--bad); }
+
+.points { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.pt { background: #f7f9fc; border: 1px solid var(--line-soft); color: var(--ink-2);
+      border-radius: var(--r-chip); padding: 3px 11px; font-size: 12px; cursor: pointer; }
+.pt:hover { background: var(--accent-soft); border-color: #c3d6ff; color: var(--accent); }
+.summary { color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
+
+/* ---- 分段(概览 / 学习状态 / 相关节点 / 来源)----
+   每一段一条细分隔线。设计稿 §17 的右栏就是靠这几条线分段的 —— 没有它们,
+   四段文字连成一片,用户读不出「学习状态」到哪里结束、「相关节点」从哪里开始。 */
+#panel .sec { padding-bottom: 12px; margin-bottom: 12px;
+              border-bottom: 1px solid var(--line-soft); }
+#panel .sec:last-child { border-bottom: 0; margin-bottom: 0; }
+
+/* ---- 学习状态 ----
+   **这一段的排版是居中的**(其余各段仍然左对齐)。它整段只有三样东西:状态芯片、
+   一句话说明、一个通栏按钮 —— 三样都靠左时,右半栏是一大片空白,读起来像没排过版。
+   居中之后这一段自己的重心落在栏中间,和它下面「相关节点」那种天然左对齐的列表
+   也不会混起来。`.sec-title` 跟着居中,否则标题会孤零零地挂在左上角。 */
+.sec-status { text-align: center; }
+.sec-status .sec-title { text-align: center; }
+.st-row { display: flex; align-items: center; justify-content: center;
+          gap: 8px; flex-wrap: wrap; margin-bottom: 9px; }
+.st-detail { font-size: 12.5px; color: var(--ink-2); }
+.st-detail b { color: var(--ink); }
+/* 「开始学习」/「继续学习」占满一行 —— 它是这一栏最主要的动作(设计稿 §18),
+   缩成一枚小按钮挤在别的按钮旁边,用户会以为它和「标记为已掌握」同级。 */
+.sec-status .btn { display: block; width: 100%; }
+
+/* ---- 提纲 ----
+   一列**有顺序的小点**,每一条可点(点一下就着这一点提问)。条目本身只有 8~14 字
+   (走查反馈 ②),所以这里刻意不用 `.pt` 那种胶囊芯片:胶囊读起来是「一堆并列的
+   关键词」,而提纲是有次第的(种类 → 做法 → 问题 → 处理)——所以是纵向的一列 +
+   左边的序号,和「相关节点」那种列表同一个语法。 */
+.olist { display: flex; flex-direction: column; gap: 3px; }
+.ol-item { display: flex; align-items: flex-start; gap: 8px; width: 100%;
+           border: 1px solid transparent; background: #f7f9fc; color: var(--ink-2);
+           text-align: left; padding: 7px 9px; border-radius: 9px;
+           font-size: 12.5px; line-height: 1.45;
+           transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+                       color var(--dur-1) var(--ease); }
+.ol-item:hover { background: var(--accent-soft); border-color: #c3d6ff; color: var(--accent); }
+/* 序号。它是**真信息**(后端按序生成,第 1 条就是最该先弄明白的),不是装饰。 */
+.ol-n { flex: 0 0 auto; width: 15px; text-align: right; color: var(--ink-3);
+        font-variant-numeric: tabular-nums; font-size: 12px; }
+.ol-item:hover .ol-n { color: var(--accent); }
+.ol-t { flex: 1; min-width: 0; }
+.sec-outline .hint { text-align: left; padding: 4px 0 8px; }
+.sec-outline .btn { display: block; width: 100%; }
+
+/* 「重新生成」摆在标题那一行的右端,所以那一行要两头撑开 —— `.sec-title` 默认是
+   块级的,不做 flex 的话动作词会掉到下一行、看起来像这一段的说明文字。 */
+.sec-outline .sec-title { display: flex; align-items: center;
+                          justify-content: space-between; gap: 8px; }
+/* **刻意做成一行小字而不是按钮**:它每次都要花一次模型调用,而这一段的主动作是
+   「点一条提纲去问助手」。两个等重的按钮并排,用户会先点错那个要花钱的。 */
+.ol-regen { border: 0; background: transparent; color: var(--ink-3);
+            font-size: 11.5px; letter-spacing: 0; text-transform: none;
+            padding: 1px 5px; border-radius: 6px; white-space: nowrap;
+            transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
+.ol-regen:hover { color: var(--accent); background: var(--accent-soft); }
+/* 重新生成在途时的同位替代。写成文字而不是禁用按钮:禁用态读起来像「这个功能坏了」,
+   而这里要说的是「正在做,等几秒」。 */
+.ol-note { color: var(--ink-3); font-size: 11.5px; letter-spacing: 0;
+           text-transform: none; white-space: nowrap; }
+
+/* ---- 相关节点 ---- */
+.rels { display: flex; flex-direction: column; gap: 2px; }
+.rel { display: flex; align-items: center; gap: 8px; width: 100%;
+       border: 0; background: transparent; text-align: left;
+       padding: 5px 8px; border-radius: 8px; font-size: 12.5px; color: var(--ink-2);
+       transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.rel:hover { background: var(--accent-soft); color: var(--accent); }
+.rel-name { flex: 1; min-width: 0; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+/* 方向箭头。`→` 是「学了当前这个才能学它」,`←` 是「它是前置」——
+   写反了用户会按着列表倒着学,而列表本身看起来完全正常。 */
+.rel-arrow { color: var(--ink-3); font-size: 12px; }
+.rel:hover .rel-arrow { color: var(--accent); }
+
+/* ---- 来源 ---- */
+.srcs { display: flex; flex-direction: column; gap: 4px; }
+.src { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+.src-ic { color: var(--ink-3); }
+.src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -147,7 +147,10 @@ def test_matrix_is_byte_deterministic(monkeypatch):
 
     def fake_perf_counter():
         calls["n"] += 1
-        return calls["n"] * 0.001
+        # 整数秒：每次测量的差值恒为 1.0，无二进制浮点残差。若用 0.001 这类值，
+        # (n+1)*0.001 - n*0.001 会引入 1e-18 级误差 → p50/p95 两跑不等，
+        # 逐字节确定性被时钟而非被测逻辑破坏。
+        return float(calls["n"])
 
     monkeypatch.setattr(runner_mod.time, "perf_counter", fake_perf_counter)
     a = _run_matrix()

@@ -83,3 +83,70 @@ def test_rag_env_overrides(monkeypatch):
     assert s.rag_enabled is True
     assert s.rag_top_k == 5
     assert s.embedding_model == "BAAI/bge-small-zh-v1.5"
+
+
+# ---- Phase 8：Model Gateway 的空值容错 ----
+# 「留空最自然」的字段是启动期地雷：LLM_TIMEOUT= 的空串不是合法 float、
+# LLM_EXTRA_PROVIDERS= 的空串不是合法 JSON（后者还抛在数据源层，字段校验器轮不到），
+# 两者都在 config **模块导入期**炸，应用连启动都到不了。这类崩法当时全量测试一条都没盖到。
+
+
+def test_llm_gateway_defaults_without_env():
+    s = Settings(_env_file=None)
+    assert s.llm_timeout is None
+    assert s.llm_retry_enabled is False
+    assert s.llm_fallback_enabled is False
+    assert s.llm_log_usage is False
+    assert s.llm_extra_providers == []
+
+
+def test_blank_llm_fields_are_read_as_unset(monkeypatch):
+    """`.env` 里写 `KEY=`（留空）→ 当作未设置，而不是启动失败。"""
+    monkeypatch.setenv("LLM_TIMEOUT", "")
+    monkeypatch.setenv("LLM_EXTRA_PROVIDERS", "")
+    s = Settings(_env_file=None)
+    assert s.llm_timeout is None
+    assert s.llm_extra_providers == []
+
+
+def test_whitespace_only_llm_fields_are_read_as_unset(monkeypatch):
+    monkeypatch.setenv("LLM_TIMEOUT", "   ")
+    monkeypatch.setenv("LLM_EXTRA_PROVIDERS", "   ")
+    s = Settings(_env_file=None)
+    assert s.llm_timeout is None
+    assert s.llm_extra_providers == []
+
+
+def test_llm_timeout_and_extra_providers_values_still_parse(monkeypatch):
+    """空值容错不能把「真有值」的路也吃掉（NoDecode 关掉了自动 JSON 解码）。"""
+    monkeypatch.setenv("LLM_TIMEOUT", "30")
+    monkeypatch.setenv(
+        "LLM_EXTRA_PROVIDERS",
+        '[{"name":"qwen","model":"qwen-plus","base_url":"https://example.invalid/v1",'
+        '"api_key":"sk-placeholder","timeout":60}]',
+    )
+    s = Settings(_env_file=None)
+    assert s.llm_timeout == 30.0
+    assert len(s.llm_extra_providers) == 1
+    assert s.llm_extra_providers[0].name == "qwen"
+    assert s.llm_extra_providers[0].timeout == 60.0
+
+
+def test_shipped_env_example_is_loadable(monkeypatch):
+    """`.env.example` 是给用户 copy 的模板——它必须真的能加载。
+
+    这是上面那类 bug 最直接的守护：模板里的空值项一旦不可解析，**每一个照抄模板启动的
+    人都会在 config 导入期崩掉**，症状是「我不知道怎么启动这个项目」。
+    """
+    from pathlib import Path
+
+    # 清掉环境变量，免得本机 shell 里的同名变量把模板值盖掉，测出假绿。
+    for key in ("LLM_TIMEOUT", "LLM_EXTRA_PROVIDERS"):
+        monkeypatch.delenv(key, raising=False)
+
+    example = Path(__file__).resolve().parents[1] / ".env.example"
+    s = Settings(_env_file=example)  # 能构造出来即达标
+
+    assert s.llm_timeout is None  # 模板里是空的
+    assert s.llm_extra_providers == []
+    assert s.agent_mode in ("graph", "loop")

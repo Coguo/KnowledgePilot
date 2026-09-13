@@ -1,0 +1,91 @@
+/* AI 助手(设计稿 §21)—— 全前端唯一的对话 UI,**停靠在中间列的底部**。
+   对话气泡本身的样式在 base.css(`.msg` / `.bubble`),因为它与「对话」页共用。
+
+   ┌──────────┬──────────────────────┬────────────┐
+   │          │      #stage(画布)   │            │
+   │ Sidebar  ├──────────────────────┤ Inspector  │
+   │          │ #assistant(停靠条)  │            │
+   └──────────┴──────────────────────┴────────────┘
+
+   **它是 `<main>` 这个 flex 列里的第二个孩子,不是浮层。** 上一版是 `position:fixed`
+   的左下角卡片:`fixed` 让它脱离三栏网格,于是它压着侧栏、和「中间列」没有任何视觉
+   隶属关系;收起后又变成一颗漂在画布上的小胶囊,用户再也找不到重新打开的入口。
+   改成 flex 子元素之后,「画布让出一块地方给它」是布局本身保证的,不需要 z-index,
+   也不可能盖住任何东西 —— 画布 `flex: 1`,它 `flex: 0 0 auto`。 */
+
+#assistant {
+  flex: 0 0 auto;
+  /* 展开时最多占约中间列的 4 成高,画布至少还剩一半。**用 max-height 而不是 height**:
+     没有对话时那一块是内容高度(一条细栏而已),不会一上来就白占着 4 成空间。 */
+  max-height: 46vh;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+}
+
+/* `display: flex` 会盖掉浏览器给 `[hidden]` 的默认 `display: none` ——
+   `views/assistant.js` 在「对话」页把整块藏起来时用的就是 `el.hidden`,少了这一条
+   那句 `hidden = true` 会**完全不起作用**(页面照旧显示一条空的横线)。 */
+#assistant[hidden] { display: none; }
+
+/* 展开态。没有 `.card`(圆角 + 阴影 + 四周边框)了 —— 它是贴着栏底的一整块,
+   圆角和投影会让它读成「浮在上面的卡片」,而它现在是这一列的组成部分。 */
+.asst { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.as-head { display: flex; align-items: center; gap: 8px;
+           padding: 8px 14px 7px; border-bottom: 1px solid var(--line-soft); }
+.as-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 700;
+            display: flex; align-items: center; gap: 6px; }
+/* 收起按钮上写「收起」两个字而不是一个孤零零的 － —— 面板停靠在底部,
+   一个字形在这个位置会被读成「关闭/删除这个知识点」之类的东西。 */
+.as-min { border: 0; background: transparent; color: var(--ink-3); font-size: 12px;
+          line-height: 1; padding: 4px 8px; border-radius: 7px;
+          display: inline-flex; align-items: center; gap: 4px; }
+.as-min:hover { color: var(--ink); background: #f4f7fc; }
+
+/* 上下文行:正在学谁 + 本主题点亮了几个。**两个数都是真的**
+   (「已对话 N 轮」来自 chat_turns,「已点亮 m/n」来自后端的 progress)。 */
+.as-ctx { padding: 7px 14px; font-size: 12px; color: var(--ink-2);
+          background: #fafbfd; border-bottom: 1px solid var(--line-soft); }
+.as-ctx b { color: var(--ink); }
+.as-sep { color: var(--line); margin: 0 5px; }
+
+.as-err { padding: 7px 14px; font-size: 12px; color: var(--bad-ink);
+          background: var(--bad-soft); border-bottom: 1px solid #f5c6c6; }
+
+/* 消息区。`flex: 1` 让它在 46vh 里吃掉剩余高度,`min-height` 是空态那句话的底线。
+   `min-height: 0` 是必须的:flex 子项的默认 `min-height: auto` 会让它宁可撑破
+   父级的 max-height 也不收缩,于是整块助手会长过画布。 */
+.as-log { flex: 1; min-height: 76px; overflow-y: auto; padding: 11px 14px;
+          display: flex; flex-direction: column; gap: 10px; }
+
+/* 输入框贴着整栏的最下沿 —— 用户要的「提问框固定在中间列的下面一部分」就是它。 */
+.as-composer { display: flex; gap: 6px; padding: 10px 14px;
+               border-top: 1px solid var(--line-soft); }
+.as-composer input {
+  flex: 1; min-width: 0; padding: 9px 12px; font: inherit; font-size: 13px;
+  border: 1px solid var(--line); border-radius: var(--r-inp);
+}
+.as-composer input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.as-composer input:disabled { background: #f7f9fc; color: var(--ink-3); }
+
+/* ---- 收起态:一条永远看得见的细栏 ----
+   **不是一颗胶囊。** 它现在横铺满整个中间列,左侧是节点名,右侧固定挂着「展开 ▲」——
+   一个带动作词、位置固定的入口。上一版是一颗漂在左下角、只写着节点名的胶囊:
+   它读起来像个标签而不是按钮,用户收起后找不到回来的路。 */
+.as-launch {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 0; background: transparent; color: var(--ink-2);
+  padding: 9px 14px; font-size: 12.5px; text-align: left;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.as-launch:hover { background: var(--accent-soft); color: var(--accent); }
+.as-spark { color: var(--accent-2); }
+.as-lt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-open { flex: 0 0 auto; color: var(--ink-3); font-size: 12px;
+           display: inline-flex; align-items: center; gap: 5px; }
+.as-chev { font-size: 9px; }
+.as-launch:hover .as-open { color: var(--accent); }
+
+/* 窄屏(1000px 以下右栏变成浮层,见 layout.css):中间列变宽,停靠栏照旧 ——
+   这一档**不需要任何特例**,那正是把浮层改成 flex 子元素换来的东西。 */

@@ -47,8 +47,14 @@ class PageFetcher:
         import trafilatura  # 懒加载：[rag] extra 依赖，避免 import rag 包即拉入
 
         html_text = resp.text[: self._max_bytes]
+        # favor_precision：优先「少而准」。默认档在短页面上会把 <nav>/侧栏当正文留下
+        # （本模块 docstring 承诺的「去导航」实际没做到），而导航文本混进 chunk 会
+        # 直接污染检索与 BM25 打分。代价是极限情况下正文被裁掉一部分。
         text = trafilatura.extract(
-            html_text, include_comments=False, include_tables=True
+            html_text,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
         )
         if not text or not text.strip():
             return None

@@ -1,0 +1,132 @@
+/* reset + 排版 + 与布局无关的通用组件(.btn / .chip / .card / .md)。
+   **这里不放任何一栏专属的规则** —— 三栏各自的样式在 sidebar.css / graph.css /
+   inspector.css,这样「改动只影响哪一栏」是可以从文件名读出来的。 */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; color: var(--ink); background: var(--bg);
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 14px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; cursor: pointer; }
+
+/* 焦点可见。**用 :focus-visible 而不是 :focus** —— 鼠标点击按钮时不该留一圈环,
+   而键盘 Tab 过来必须看得见。整站统一在这里给,别在各组件里各写各的。 */
+:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-btn); }
+
+/* 滚动条:设计稿是「留白 + 层次」,系统默认的粗滚动条在浅色画布上很抢眼。 */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+*::-webkit-scrollbar-thumb:hover { background: #dbe3ee; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* **画布的滚动条不能长得像一条分界线。** 它紧贴着右栏的分隔条(画布的右边缘就是
+   那条缝),而 9px 宽、`--line` 色、圆角的滑槽在浅色底上看起来就是一条竖线 ——
+   用户报的「可调整的线与实际呈现的线存在一定的距离」正是把它读成了分界线,
+   于是觉得可拖的那条没对齐。
+
+   这里让它变成一颗**明显浮在内容上的胶囊**:轨道透明、滑槽透明边(9px 里只画
+   中间 3px)、颜色比 `--line` 淡一档。它不再是一条通到底的线,而是一段可以
+   一眼认出的滚动条。`background-clip: content-box` 是让边框真的"吃掉"宽度的
+   那一半 —— 只写 `border: solid transparent` 而不写它,背景会把边框区也涂满,
+   看起来仍是 9px 宽的实心条。 */
+#graph-scroll::-webkit-scrollbar { width: 11px; height: 11px; }
+#graph-scroll::-webkit-scrollbar-thumb {
+  background: #c3cede; border-radius: 8px;
+  border: 4px solid transparent; background-clip: content-box;
+}
+#graph-scroll::-webkit-scrollbar-thumb:hover { background: #aab9cd; background-clip: content-box; }
+
+/* ---- 卡片 ---- */
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-card); box-shadow: var(--sh-1);
+}
+
+/* ---- 按钮(设计稿 §28:圆角 10~12) ---- */
+.btn {
+  border: 1px solid var(--line); background: #fff; color: var(--ink);
+  border-radius: var(--r-btn); padding: 8px 13px;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.btn:hover:not(:disabled) { background: #f4f7fc; border-color: #dbe3ee; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff;
+               box-shadow: 0 1px 2px #356dff33; }
+.btn.primary:hover:not(:disabled) { background: #2a5ee6; border-color: #2a5ee6; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.sm { padding: 5px 10px; border-radius: 9px; font-size: 12.5px; }
+/* 危险动作(目前只有设置页的「重置当前探索」)。**不做成红色实心** —— 那会让它成为
+   页面上最显眼的元素,而这正是一个需要用户先读一行说明才该按下去的动作。 */
+.btn.danger { color: var(--bad); border-color: #f5c6c6; background: var(--bad-soft); }
+.btn.danger:hover:not(:disabled) { background: #fbe0e0; border-color: var(--bad); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+
+/* ---- 状态芯片 ---- */
+.chip {
+  display: inline-block; padding: 1px 8px; border-radius: var(--r-chip); font-size: 11px;
+  border: 1px solid var(--line); color: var(--ink-2); background: #fff;
+}
+.chip.generating { color: var(--accent); border-color: #c3d6ff; background: var(--accent-soft); }
+.chip.ready { color: var(--ok); border-color: #b3e8d6; background: var(--ok-soft); }
+.chip.failed { color: var(--bad); border-color: #f5c6c6; background: var(--bad-soft); }
+
+/* ---- 小标题 ---- */
+.sec-title { font-size: 12px; color: var(--ink-3); text-transform: uppercase;
+             letter-spacing: .04em; margin: 4px 0 6px; }
+
+/* ---- 空态 / 提示 ---- */
+.empty {
+  margin: auto; text-align: center; color: var(--ink-2); padding: 32px; max-width: 460px;
+}
+.empty h2 { font-size: 17px; color: var(--ink); margin: 0 0 6px; }
+.notice { background: var(--bad-soft); border: 1px solid #f5c6c6; color: var(--bad-ink);
+          padding: 12px 14px; border-radius: 12px; margin-top: 14px; text-align: left; }
+.notice code { background: #ffffffaa; padding: 1px 5px; border-radius: 5px; }
+.hint { color: var(--ink-3); font-size: 12.5px; text-align: center; padding: 10px 0; }
+.timer { color: var(--ink-3); font-size: 12px; }
+
+/* ---- Markdown 渲染结果 ---- */
+.md { font-size: 13.5px; }
+.md h1, .md h2, .md h3 { font-size: 14.5px; margin: 14px 0 6px; }
+.md h1:first-child, .md h2:first-child, .md h3:first-child { margin-top: 0; }
+.md p { margin: 8px 0; }
+.md ul, .md ol { margin: 8px 0; padding-left: 22px; }
+.md li { margin: 3px 0; }
+.md blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--line);
+                 color: var(--ink-2); background: #fafbfc; border-radius: 0 8px 8px 0; }
+.md code { background: #f1f5f9; padding: 1px 5px; border-radius: 5px;
+           font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.md pre.code { background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 11px;
+               padding: 10px 12px; overflow-x: auto; margin: 10px 0; }
+.md pre.code code { background: transparent; padding: 0; font-size: 12.5px; line-height: 1.5; }
+.md hr { border: 0; border-top: 1px solid var(--line-soft); margin: 14px 0; }
+.md a { color: var(--accent); }
+
+/* ---- 对话气泡(设计稿 §21/§22)----
+   **它是共用组件,所以住在 base.css 而不是某一栏的样式文件里。** 第 6 阶段起同一个
+   `KP.chat.bubblesHTML` 的产物同时出现在浮动助手(`assistant.css`)与「对话」页
+   (`chat.css`)—— 留在 inspector.css 里的话,两处都会「看起来该有样式却没有」,
+   而 CSS 漏一条选择器是**静默**的:元素还在,只是长得不对。 */
+.msg { font-size: 13.5px; }
+.msg .role { font-size: 11px; color: var(--ink-3); margin-bottom: 2px; }
+.msg .bubble { border-radius: 12px; padding: 8px 12px; }
+.msg.user { align-self: flex-end; max-width: 90%; }
+.msg.user .bubble { background: var(--accent-soft); }
+.msg.assistant .bubble { background: #f7f9fc; border: 1px solid var(--line-soft); }
+
+/* ---- 过程日志的一行 ----
+   **同 `,msg` 那条:两个地方在用,所以住 base.css。** `KP.chat.line` 的产物既是
+   生成卡片里的进度行(`views/graph.js`),也是「对话」页的过程行(`views/chat.js`)。
+   第 7 阶段把生成卡片从中间列挪进右栏时,这几条差点被一起搬进 `inspector.css`
+   —— 那样「对话」页的过程行会**静默地**失去样式(元素还在,只是不再小一号、错误
+   不再变红),而没有任何东西会报错。 */
+.line { font-size: 12.5px; color: var(--ink-2); }
+.line.err { color: var(--bad); }
+
+/* ---- 落盘文件信息 ---- */
+.path { font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+        color: var(--ink-3); word-break: break-all; margin: 8px 0; }

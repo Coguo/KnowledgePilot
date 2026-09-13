@@ -77,3 +77,61 @@ class KgEvent:
     entities: int
     relations: int
     found_triples: int
+
+
+# ---- Phase 9 新增事件 ----------------------------------------------------
+
+
+@dataclass
+class ErrorEvent:
+    """本轮请求以异常收尾（message 已脱敏，可直接展示给用户）。
+
+    存在的理由：`api/main.py::event_stream` 此前没有 except，异常直接穿出异步生成器
+    → 客户端拿到 HTTP 200 + 被截断的 body → 前端一个错误都不显示。用户因此无法区分
+    「模型失败了」与「还在跑」。现在后端把异常转成本事件，前端能明确报错。
+    """
+
+    message: str
+
+
+@dataclass
+class GraphReadyEvent:
+    """Phase 9：学习主题的图谱已生成落库，可以开始学习。
+
+    nodes/edges 为计数（前端真正要的整图走 GET /api/learning/topics/{id} 纯读拉取，
+    不塞进事件流——否则大图会把 SSE 帧撑成几百 KB）。
+    """
+
+    topic_id: str
+    nodes: int
+    edges: int
+    degraded: bool  # True = LLM 抽取失败，已降级为标题线性路径
+
+
+@dataclass
+class NodesEvent:
+    """学习侧生成：**直接从资料抽出的知识点**（不经「先写一份报告再从中抽」）。
+
+    为什么需要一个新事件而不是复用 `DoneEvent`：`DoneEvent.content` 的契约是
+    「一段给人读的正文」（对话页直接把它当回答渲染），而这里要传的是**结构化数据**，
+    给机器建图用。混进同一个字段，调用方就只能靠「正文看起来像不像 JSON」来猜。
+
+    `summary` 是一句话结论：它顶替了原来「报告第一句」的位置（主题摘要 + 记忆召回
+    的展示行），所以报告没了也要有东西可填。
+    """
+
+    nodes: list[dict]
+    summary: str = ""
+
+
+@dataclass
+class RecommendEvent:
+    """Phase 9：系统认为某个知识点已讲透，**推荐**点亮（等用户确认，不自动置掌握）。
+
+    `reason` 是给用户看的判定理由（「讲清了切分粒度与重叠窗口」），不是给机器读的；
+    用户据此判断该不该点确认——所以它必须是自然语言，不能是 "covered=true"。
+    """
+
+    node_id: str
+    reason: str
+    confidence: float

@@ -3,197 +3,120 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KnowledgePilot · Research Chat</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-      max-width: 860px; margin: 0 auto; padding: 24px 16px;
-      color: #1f2328; background: #fff;
-    }
-    h1 { font-size: 20px; margin: 0 0 4px; }
-    .subtitle { color: #57606a; font-size: 13px; margin: 0 0 16px; }
-    #log { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }
-    .msg { white-space: pre-wrap; line-height: 1.6; font-size: 15px; }
-    .msg.user {
-      align-self: flex-end; background: #e8f0fe; color: #0b57d0;
-      padding: 10px 14px; border-radius: 12px; max-width: 80%;
-    }
-    .msg.assistant { align-self: flex-start; max-width: 100%; }
-    .tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
-    .tool-status { color: #57606a; font-size: 13px; }
-    .tool-status.searching { color: #0969da; }
-    form { display: flex; gap: 8px; }
-    input {
-      flex: 1; padding: 10px 12px; border: 1px solid #d0d7de; border-radius: 8px;
-      font-size: 14px;
-    }
-    input:focus { outline: 2px solid #0969da40; border-color: #0969da; }
-    button {
-      padding: 10px 18px; border: none; border-radius: 8px;
-      background: #0969da; color: #fff; font-size: 14px; cursor: pointer;
-    }
-    button:disabled { opacity: .6; cursor: not-allowed; }
-    #status { font-size: 13px; color: #57606a; margin-top: 8px; }
-  </style>
+  <title>KnowledgePilot · 学习图谱</title>
+  <!--
+    多文件前端 / 零依赖 / 离线可跑(无 CDN、无字体外链、无构建步骤)。
+
+    三条规矩,`tests/test_api.py` 与 `tests/js/` 会机械地守住它们:
+
+    1. 本文件**不含任何内联的 style / script 标签**(`test_index_has_no_inline_script_or_style`;
+       注释里也不能写出那个标签字面量 —— 扫描不看注释,一个字面量就会把测试弄红)。
+       所有样式在 `css/`,所有脚本在 `js/`,以相对路径引用。
+    2. 每个资源的引用都能被自己 GET 到(`test_index_assets_all_resolve`)——
+       文件名打错只会白屏,运行时**不会报错**,所以必须由测试挡。
+    3. `js/` 里每个文件在**加载期**只做 `window.KP.xxx = ...` 定义,不碰 DOM
+       (`tests/js/harness.mjs` 用一个会抛异常的 document Proxy 强制这条)。
+       唯一的例外是 `js/app.js`,它排在最末、是唯一有顶层副作用的文件。
+
+    脚本用普通的 defer script 标签,**不用 ES module**:`defer` 保证按序执行、
+    且不受 CORS 限制(module 在 `file://` 下会被拦)。模块之间通过 `window.KP`
+    命名空间通信,调用一律在**运行时**解析,所以下面的顺序只要求「被依赖者在前」,
+    不构成硬性依赖图。
+
+    「重启后不重新检索」在前端的落法:**页面只发 GET 就能恢复全部状态**
+    —— 主题列表、图谱、正文、对话历史各有各的 GET,打开节点不会自动开讲
+    (LEARNING_AUTO_EXPLAIN 默认 false)。所以刷新一次网络面板里只有 GET。
+    地址栏带 hash 路由(#/g/<topic>/n/<node>),刷新回到同一个位置。
+  -->
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/layout.css">
+  <link rel="stylesheet" href="/static/css/sidebar.css">
+  <link rel="stylesheet" href="/static/css/graph.css">
+  <link rel="stylesheet" href="/static/css/inspector.css">
+  <link rel="stylesheet" href="/static/css/assistant.css">
+  <link rel="stylesheet" href="/static/css/chat.css">
+  <link rel="stylesheet" href="/static/css/settings.css">
 </head>
 <body>
-  <h1>🧭 KnowledgePilot · Research Chat</h1>
-  <p class="subtitle">Phase 6 · MCP（研究辅助工具：Memory / Papers，LLM 可主动调用）</p>
+<div class="app" id="app">
+  <!-- 左栏:品牌 / 导航 / 我的探索 / 学习进度卡 -->
+  <aside id="sidebar">
+    <header class="brand">
+      <h1>KnowledgePilot</h1>
+      <p class="subtitle">让知识真正成为你的生产力</p>
+    </header>
+    <!-- 导航项由 `views/shell.js` 按「当前路由 + 这一屏有哪些视图真的能用」渲染,
+         不写死在这里:加一个指向尚未实现的视图的入口,比少一个入口更糟 ——
+         用户点下去只会得到一片空白,而且不会报错。 -->
+    <nav class="nav" id="nav"></nav>
+    <div class="explore">
+      <div class="ex-head"><span class="sec-title">我的探索</span></div>
+      <form id="new-topic" autocomplete="off">
+        <input id="new-query" type="text" placeholder="想学什么？例如 RAG 的 chunking 策略" />
+        <button class="btn primary" id="new-go" type="submit" title="新建探索">＋</button>
+      </form>
+      <div id="topics"></div>
+    </div>
+    <div class="progress" id="progress"></div>
+  </aside>
 
-  <div id="log"></div>
+  <main id="main">
+    <div id="stage"></div>
 
-  <form id="form">
-    <input id="input" type="text" placeholder="例如：RAG 的 chunking 策略有哪些？" autocomplete="off" />
-    <button id="send" type="submit">发送</button>
-  </form>
-  <div id="status"></div>
+    <!-- AI 助手 —— **全前端唯一的对话 UI**(设计稿 §21)。它停靠在中间列的底部,
+         和画布同属 `<main>` 这一个 flex 列:`#stage` 是 `flex: 1`,它是 `flex: 0 0 auto`,
+         所以画布自动吃掉剩下的高度,助手永远不会盖住画布(见 css/assistant.css)。
 
-<script>
-  const form = document.getElementById('form');
-  const input = document.getElementById('input');
-  const send = document.getElementById('send');
-  const log = document.getElementById('log');
-  const status = document.getElementById('status');
+         它**不在** `.app` 里也不再是 `position: fixed` —— 上一版是个浮在左下角的卡片,
+         既压着侧栏,又在收起后缩成一颗小胶囊漂在画布上:用户找不到重新打开的入口,
+         而且它跟「中间列」在视觉上没有任何隶属关系。 -->
+    <div id="assistant"></div>
+  </main>
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
+  <!-- 右栏常驻:没有选中节点时显示占位提示,而不是折叠(见 css/layout.css)。 -->
+  <aside id="panel"></aside>
 
-    appendMessage('user', text);
-    input.value = '';
-    send.disabled = true;
-    status.textContent = '正在思考…';
+  <!-- 两条可拖拽的列分隔条(左右两栏的宽度由用户自己定)。
+       它们是 `.app` 的**绝对定位子元素**,而不是网格里的一列:往网格里插元素就要动
+       `grid-template-columns`,而那正是拖动时在改的那个属性 —— 两边互相打架。
+       所以 `css/layout.css` 给 `.app` 加了 `position: relative`。
+       行为在 `js/resizer.js`,绑定在 `views/shell.js` 的 `init()` 里(挂载点只有
+       那两个文件允许用 `getElementById`)。 -->
+  <div class="col-resizer" id="rz-side" role="separator" aria-orientation="vertical"
+       tabindex="0" aria-label="调整左栏宽度"
+       title="拖动调整宽度 · 双击恢复默认 · 方向键微调"></div>
+  <div class="col-resizer" id="rz-insp" role="separator" aria-orientation="vertical"
+       tabindex="0" aria-label="调整右栏宽度"
+       title="拖动调整宽度 · 双击恢复默认 · 方向键微调"></div>
+</div>
 
-    const assistantEl = appendMessage('assistant', '');
+<!-- 基础层:其余所有文件都依赖 KP.esc / KP.dom -->
+<script defer src="/static/js/util.js"></script>
+<script defer src="/static/js/dom.js"></script>
+<script defer src="/static/js/icons.js"></script>
 
-    try {
-      const resp = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
-      });
-      if (!resp.ok || !resp.body) {
-        const detail = await resp.json().then(d => d.detail).catch(() => resp.statusText);
-        throw new Error(`请求失败 (${resp.status}): ${detail}`);
-      }
+<!-- 纯函数层:能在 Node 里直接单测的部分 -->
+<script defer src="/static/js/sse.js"></script>
+<script defer src="/static/js/markdown.js"></script>
+<script defer src="/static/js/store.js"></script>
+<script defer src="/static/js/chat.js"></script>
+<script defer src="/static/js/graph/layout.js"></script>
+<script defer src="/static/js/graph/canvas.js"></script>
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
+<!-- 数据访问:全前端唯一知道 URL 的地方 -->
+<script defer src="/static/js/api.js"></script>
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const frames = buf.split('\n\n');
-        buf = frames.pop() ?? '';
-        for (const frame of frames) {
-          for (const line of frame.split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6);
-            if (data === '[DONE]') { status.textContent = ''; return; }
-            handleEvent(JSON.parse(data), assistantEl);
-          }
-        }
-      }
-    } catch (err) {
-      status.textContent = '⚠️ ' + err.message;
-    } finally {
-      send.disabled = false;
-      input.focus();
-    }
-  });
+<!-- 视图 -->
+<script defer src="/static/js/resizer.js"></script>
+<script defer src="/static/js/views/shell.js"></script>
+<script defer src="/static/js/views/graph.js"></script>
+<script defer src="/static/js/views/inspector.js"></script>
+<script defer src="/static/js/views/assistant.js"></script>
+<script defer src="/static/js/views/chat.js"></script>
+<script defer src="/static/js/views/settings.js"></script>
 
-  function handleEvent(evt, assistantEl) {
-    switch (evt.type) {
-      case 'token':
-        assistantEl.querySelector('.content').textContent += evt.content;
-        break;
-      case 'plan': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        const steps = (evt.plan || []).map(s => s.question || s.goal).filter(Boolean);
-        el.textContent = '📋 研究计划：' + steps.join(' → ');
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'status': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        el.textContent = evt.message;
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'eval': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        const mark = evt.sufficient ? '✅ 信息已充分' : '🔁 信息不足，继续研究';
-        el.textContent = `第 ${evt.iteration} 轮评估：${mark} — ${evt.reason}`;
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'memory': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        el.textContent = '🧠 找到 ' + evt.found + ' 条历史研究记录，已供规划参考';
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'kg': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        el.textContent = '🕸️ 知识图谱：' + evt.entities + ' 实体 / ' + evt.relations + ' 关系，命中 ' + evt.found_triples + ' 条，已供报告参考';
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'tool_call': {
-        // search_web（原生网页搜索）保留原「🔍 正在搜索：query」；
-        // MCP 辅助工具（memory/papers）按工具名展示（参数不总有 query，recent_research 只有 limit）。
-        const mcpTool = ['search_memory', 'recent_research', 'search_papers'].includes(evt.name);
-        let icon = mcpTool ? ('🛠 正在调用 ' + evt.name) : '🔍 正在搜索';
-        let detail = '';
-        if (evt.arguments) {
-          try {
-            const p = JSON.parse(evt.arguments);
-            detail = p.query
-              || (p.limit != null ? 'limit=' + p.limit : '')
-              || (p.max_results != null ? 'max_results=' + p.max_results : '');
-          } catch {}
-        }
-        if (!detail) detail = evt.arguments || '';
-        const el = document.createElement('div');
-        el.className = 'tool-status searching';
-        el.textContent = (icon + (detail ? '：' + detail : '')).trim();
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'tool_result': {
-        const el = document.createElement('div');
-        el.className = 'tool-status';
-        el.textContent = '✅ 已获取结果：' + evt.summary;
-        assistantEl.querySelector('.tools').appendChild(el);
-        break;
-      }
-      case 'done':
-        status.textContent = '';
-        break;
-    }
-  }
-
-  function appendMessage(role, text) {
-    const wrap = document.createElement('div');
-    wrap.className = 'msg ' + role;
-    if (role === 'assistant') {
-      wrap.innerHTML = '<div class="tools"></div><div class="content"></div>';
-      wrap.querySelector('.content').textContent = text;
-    } else {
-      wrap.textContent = text;
-    }
-    log.appendChild(wrap);
-    window.scrollTo(0, document.body.scrollHeight);
-    return wrap;
-  }
-</script>
+<!-- 启动:必须是最后一个,且是唯一有顶层副作用的文件 -->
+<script defer src="/static/js/app.js"></script>
 </body>
 </html>

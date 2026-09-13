@@ -1,0 +1,187 @@
+/* 中栏:知识图谱画布 + 筛选/图例 + 工具栏 + 生成日志(设计稿 §9~§16)。
+   节点的四态配色**不在这里** —— 它们是数据驱动、写进 SVG 属性的
+   (见 js/store.js 的 STATE 表),CSS 只管布局与交互反馈。
+
+   注意这一条:凡是要作用于 SVG **属性**(`fill=` / `stroke=`)的颜色,写在这里是
+   没用的 —— SVG 属性不认 CSS 变量也不被 CSS 覆盖(只有 `style=` 才认)。所以
+   `st-mastered` 的 Glow 用的是 `filter`/`opacity` 这类**表现属性**,
+   而不是 `stroke`。 */
+
+/* ---- 画布容器 ----
+   `.canvas` 是工具栏的定位父级:工具栏绝对定位在右下角,**不在 `#graph-scroll` 里** ——
+   放进去它会跟着内容一起滚走(图放大后比容器大,工具栏就滚出屏幕了)。 */
+.canvas { position: relative; flex: 1; min-height: 0; display: flex; }
+
+/* ---- 无限画布(设计稿 §9)----
+   底色 + 极淡的点阵。点阵用 `background-image` 而不是 SVG pattern:
+   它会随 `#graph-scroll` 一起滚动,于是平移时「地」是动的而节点是静的 ——
+   反之(点阵盖在滚动容器外)会让整张图看起来像贴在窗户上。 */
+#graph-scroll {
+  flex: 1; min-height: 0; overflow: auto; padding: 8px 20px 24px;
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 22px 22px;
+  /* 拖动时不要选中文本 —— 否则一次平移会把页面上能选中的东西全选蓝,而且松手后
+     选区还在,看起来像卡住了。 */
+  user-select: none; -webkit-user-select: none;
+}
+/* `width: max-content` + `min-width: 100%` 这套是**必需的**,不是风格选择。
+ *
+ * 只写 `min-width: 100%` 时,`#graph-fit` 的宽度等于容器的内容宽,而 SVG 比它宽 ——
+ * 于是 SVG 作为一个**溢出**的 flex item 被 `justify-content: center` 从**两边**顶出去。
+ * LTR 下前缘(左边)的溢出**不可滚动**:`scrollLeft` 最小是 0,那段内容永远够不着。
+ * 表现是「图左边一截怎么拖都看不见」,而右边的内容滚得很好 —— 看起来像布局没对齐,
+ * 不像滚动区域算错了。Stage 5 让图可以被放大之后,这条从「12 节点链条才有」变成了
+ * 常见状态。
+ *
+ * `width: max-content` 让这个盒子**长到和 SVG 一样宽**,于是没有多余的空白可以居中,
+ * SVG 就落在 x=0 处,整张图都在可滚动范围内;图比容器窄时 `min-width: 100%` 接管,
+ * 居中照常生效。 */
+#graph-fit { width: max-content; min-width: 100%; min-height: 100%; display: flex;
+             align-items: center; justify-content: center; }
+svg.graph { display: block; }
+svg.graph text { font-family: inherit; }
+g.node { cursor: pointer; }
+g.node rect.box { transition: filter var(--dur-1) var(--ease), stroke-width var(--dur-1) var(--ease); }
+g.node:hover rect.box { filter: brightness(.97); }
+g.node rect.box.sel { filter: drop-shadow(0 0 0 3px #356dff30); }
+
+/* ---- 节点四态(设计稿 D6)----
+   **只加徽标/滤镜,不改 `fill`/`stroke`** —— 底色与边框由 `store.js` 的 STATE 表
+   按状态写进 SVG 属性,两边都管同一件事就会打架(而 CSS 权重更高,于是表里改了
+   颜色页面上没变,查起来极费劲)。这里只负责表里表达不了的那一层:发光、动画。 */
+
+/* 已掌握:Glow。用 `drop-shadow` 而不是 `box-shadow`(后者对 SVG 元素无效)。
+   光晕半径随呼吸动 —— 这是「点亮」这个隐喻在静止画面上的落点。 */
+g.node.st-mastered rect.box { filter: drop-shadow(0 0 5px #20b48659); }
+/* 待确认:虚线边框在 SVG 属性里已经有了,这里补一个轻微的呼吸吸引注意。 */
+g.node.st-recommended rect.box { filter: drop-shadow(0 0 4px #d4a72c40); }
+
+/* 「点亮」的那一下。`patchNodeEl` 在换完 class 后加 `pop`,动画播完不摘 ——
+   摘它需要 `animationend` 监听,而少一个监听器的代价只是类名多挂一个,
+   留着比多一处事件绑定稳(也能让「下次再点亮」重新触发,见下面那条注释)。 */
+@keyframes kp-pop {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+g.node.pop { animation: kp-pop var(--dur-2) var(--ease); }
+/* SVG 的 `transform` 默认以**画布原点**为基准,直接缩放会把盒子甩到别处。
+   `transform-box: fill-box` + `transform-origin: center` 让它绕自己的中心缩放。
+   (`transform-box` 在旧浏览器上不支持 —— 那时的表现是弹一下时位置偏一点,
+   不影响任何功能,所以不做回退。) */
+g.node.pop rect.box { transform-box: fill-box; transform-origin: center; }
+
+/* ---- 中心节点环形进度(设计稿 §12)----
+   环画在**唯一的那个 depth-0 节点**外面(见 `layout.js` 的 `centerOf`:多根或横向
+   布局没有确定的中心,那种图上不画)。颜色用 CSS 变量而不是 SVG 属性 —— 这两个
+   圆没有走 `KP.STATE` 表,它们表达的是**主题级进度**,不是节点状态,用状态色会让
+   人以为「中心节点是哪个状态」。 */
+.ring-track { fill: none; stroke: var(--line); stroke-width: 5; }
+.ring-bar {
+  fill: none; stroke: var(--accent); stroke-width: 5; stroke-linecap: round;
+  /* 长度变化走 transition 而不是重建 DOM:点亮一个节点只改 `stroke-dashoffset`
+     这一个表现属性,于是缩放/平移与邻居节点的动画相位全都保住。 */
+  transition: stroke-dashoffset var(--dur-2) var(--ease);
+}
+/* 呼吸。整圈一起淡入淡出不改长度 —— 长度是读数,让它动起来会读不准。 */
+g.centerglow { animation: kp-breathe 5s ease-in-out infinite; }
+@keyframes kp-breathe {
+  0%, 100% { opacity: .55; }
+  50%      { opacity: 1; }
+}
+
+/* 减少动效:动画关掉,**静态的 Glow 留着**。
+   计划里第 7 阶段那一行写的是「关呼吸与 Glow」,这里只关了呼吸 —— 因为 Glow 是
+   状态识别的一个通道(「已掌握」的绿光晕),而「减少动效」要减少的是**移动**,
+   不是信息。关掉它等于让开了这个偏好的人少看出一种状态。 */
+@media (prefers-reduced-motion: reduce) {
+  g.node.pop { animation: none; }
+  g.centerglow { animation: none; opacity: .85; }
+}
+
+/* ---- 首次进入 / 全部点亮 的遮罩(设计稿 §24 / §25)----
+   它是**盖在画布上的一层**,不是一页:底下的图已经画好了,卡片只是说一句话。
+   所以定在 `.canvas` 里(而不是接管 `#stage`)—— 后者会把顶栏与筛选一起顶掉,
+   按完「开始学习」整页会闪一下。`z-index` 高于工具栏(5),否则缩放的四个按钮
+   会浮在卡片上面。 */
+.overlay {
+  position: absolute; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: var(--scrim);
+}
+.ov-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card);
+  box-shadow: var(--sh-3); padding: 26px 30px; max-width: 420px; text-align: center;
+}
+.ov-eyebrow { color: var(--ink-2); font-size: 12.5px; margin: 0 0 6px; }
+.ov-card h2 { font-size: 19px; margin: 0 0 10px; }
+.ov-stats { color: var(--ink-2); font-size: 13px; margin: 0 0 10px; }
+.ov-stats b { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+.ov-note { color: var(--ink-3); font-size: 12.5px; margin: 0 0 18px; }
+/* 完成态:那一枚 ✦ 与极轻的绿色光晕。**不做整图扫光动画** —— 「所有节点明亮」
+   这件事已经由 `st-mastered` 的静态 Glow 做到了(每个节点都进过 mastered),
+   再叠一层每帧重绘 28 个盒子的滤镜,换来的是一个看不出来的「扩散」。 */
+.ov-card.lit { border-color: #b3e8d6; box-shadow: var(--sh-3), 0 0 44px #20b48626; }
+.ov-spark { color: var(--ok); font-size: 26px; line-height: 1; margin-bottom: 8px; }
+
+path.edge { fill: none; stroke: var(--edge); stroke-width: 1.6; }
+path.edge.hot { stroke: var(--accent); stroke-width: 2.2; }
+/* 反向边(破环时强制放行产生的)。几何上已经用二次曲线绕开了 —— 这里再压一道
+   视觉弱化,是因为它表达的是「理论上不该存在的顺序」,不该和正常前置一样醒目。 */
+path.edge.back { stroke-dasharray: 4 3; opacity: .7; }
+.leghead { fill: var(--ink-3); font-size: 11px; }
+
+/* ---- 筛选条(设计稿 §15/§16)—— 它同时是图例 ----
+   状态芯片上带色块:色块解释编码,芯片本身可点着筛。合成一行是因为原来那条
+   纯展示的 `.legend` 和筛选说的是同一件事(四种状态),两行并排纯属占高度。 */
+.filters { display: flex; gap: 6px; align-items: center; color: var(--ink-2);
+           font-size: 12px; padding: 0 20px 6px; flex-wrap: wrap; }
+.filters:first-of-type { padding-top: 4px; }
+.flabel { color: var(--ink-3); margin-right: 2px; }
+/* 末尾那句方向说明。原来是行内 `style="color:var(--ink-3)"` —— 挪进 CSS 是为了
+   让 `views/graph.js` 的 header() 保持「纯字符串、零行内样式」,好在 Node 里整段断言。 */
+.lghint { color: var(--ink-3); }
+.chipbtn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink-2);
+  border-radius: var(--r-chip); padding: 3px 11px; font-size: 12px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.chipbtn:hover { border-color: var(--edge); color: var(--ink); }
+.chipbtn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.chipbtn:focus-visible { outline: none; box-shadow: var(--ring); }
+.swatch { width: 22px; height: 14px; border-radius: 5px; border: 1px solid var(--line); }
+.swatch.unlearned { background: #fff; border-style: dashed; }
+.swatch.learning { background: var(--accent-2-soft); border-color: var(--accent-2); }
+.swatch.recommended { background: var(--warn-soft); border-color: var(--warn); }
+.swatch.mastered { background: var(--ok-soft); border-color: var(--ok); }
+
+/* ---- 画布工具栏(设计稿 §14,右下角)---- */
+.toolbar {
+  position: absolute; right: 16px; bottom: 16px; z-index: 5;
+  display: flex; gap: 4px; padding: 5px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-btn); box-shadow: var(--sh-2);
+}
+.tbtn {
+  min-width: 32px; height: 30px; padding: 0 9px;
+  border: 1px solid transparent; background: transparent; color: var(--ink-2);
+  border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit;
+  transition: background var(--dur-1) var(--ease);
+}
+.tbtn:hover { background: var(--line-soft); color: var(--ink); }
+.tbtn:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* ---- 布局切换(横向 / 放射) ----
+   不用 `margin-left: auto` 靠右:顶栏里 `.topbar h2` 已经是 `flex: 1`,
+   它负责把后面这组按钮推过去;再加一个 auto 会在窄屏上多挤出一段空隙。 */
+.segwrap { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.segwrap .lghint { margin-right: 2px; }
+.seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ---- 生成卡片 / 日志 ----
+   **搬走了**(走查反馈 ④):生成阶段的整块——卡片、进度行、逐字报告——现在住在**右栏**,
+   所以 `.gen-card` / `#gen-log` / `#gen-body` 的规则跟着容器去了 `css/inspector.css`
+   (规则跟着容器走,不然下一处改动会找不到它们)。`.line` 在 `base.css`:它是生成卡片
+   与「对话」页共用的那一行。 */

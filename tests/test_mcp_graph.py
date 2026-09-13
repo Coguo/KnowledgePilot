@@ -46,6 +46,12 @@ PAPERS_TOOL = {
     },
 }
 
+# 研究节点：只调 search_web（无 MCP 时用——MCP 关闭/空网关下模型拿不到 MCP schema，
+# 脚本里再出现 MCP 工具名会走 _dispatch_tool 的「未知工具」ValueError，那是别处的契约）。
+SCRIPT_WEB_ONLY = [
+    ([], [{"name": "search_web", "arguments": '{"query": "RAG chunking 资料"}'}]),
+    (["本轮研究总结。"], []),
+]
 # 研究节点：先调 search_web（采证）+ search_papers（MCP，落 notes）再总结。
 SCRIPT_WEB_AND_MCP = [
     (
@@ -57,9 +63,17 @@ SCRIPT_WEB_AND_MCP = [
     ),
     (["本轮研究总结。"], []),
 ]
-# 跨研究轮：round1 调 memory、round2 调 papers（notes 跨轮累计）。
+# 跨研究轮：round1 调 search_web（采证）+ memory、round2 调 papers（notes 跨轮累计）。
+# 必须带上 search_web：下面要验证「MCP 的 arXiv URL 不进 sources」，前提是本轮真的
+# 有网页来源可对照——纯 MCP 调用不产生 evidence，sources 为空会让该断言失去意义。
 SCRIPT_TWO_ROUNDS = [
-    ([], [{"name": "search_memory", "arguments": '{"query": "RAG chunking"}'}]),
+    (
+        [],
+        [
+            {"name": "search_web", "arguments": '{"query": "RAG chunking"}'},
+            {"name": "search_memory", "arguments": '{"query": "RAG chunking"}'},
+        ],
+    ),
     (["第一轮研究总结。"], []),
     ([], [{"name": "search_papers", "arguments": '{"query": "RAG chunking"}'}]),
     (["第二轮研究总结。"], []),
@@ -117,7 +131,7 @@ def _fake(complete_script, script=SCRIPT_WEB_AND_MCP):
 
 async def test_mcp_disabled_matches_phase5():
     """mcp=None（默认）：工具列表仍是 ALL_TOOLS、无 notes 块、调用数不变。"""
-    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, REPORT])
+    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, REPORT], script=SCRIPT_WEB_ONLY)
     events = await _run("研究问题", llm, mcp=None)
 
     assert llm.seen_tools[-1] == [SEARCH_WEB_TOOL]  # 与 Phase 5 相同的 ALL_TOOLS
@@ -128,7 +142,7 @@ async def test_mcp_disabled_matches_phase5():
 
 async def test_mcp_gateway_with_no_tools_is_disabled():
     """网关已开但没连到任何工具（server 全失败）→ 与禁用一致。"""
-    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, REPORT])
+    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, REPORT], script=SCRIPT_WEB_ONLY)
     gw = FakeMCPGateway(tools=[], responses={})
     events = await _run("研究问题", llm, mcp=gw)
 
@@ -185,6 +199,7 @@ async def test_mcp_notes_accumulate_and_do_not_pollute_sources(tmp_path):
         events = await _run(
             "研究 RAG chunking", llm, mcp=gw, memory=store, tmp_path=tmp_path
         )
+        run = store.recent(1)[0]  # 必须在关库前读（close() 会释放连接）
     finally:
         store.close()
 
@@ -197,7 +212,6 @@ async def test_mcp_notes_accumulate_and_do_not_pollute_sources(tmp_path):
     assert isinstance(events[-1], DoneEvent)
 
     # sources 语义红线：只有 search_web 的 stub 来源，绝无 MCP 的 arXiv URL
-    run = store.recent(1)[0]
     assert run["query"] == "研究 RAG chunking"
     urls = [s["url"] for s in run["sources"]]
     assert any("stub.example" in u for u in urls)

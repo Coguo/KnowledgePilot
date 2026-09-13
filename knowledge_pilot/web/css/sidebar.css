@@ -1,0 +1,80 @@
+/* 左栏(设计稿 §6 / §7 / §8):品牌 / 导航 / 我的探索 / 学习进度卡。
+   主题条目的样式也在这一节 —— 它是「我的探索」的列表项,不是通用组件。 */
+
+#sidebar {
+  display: flex; flex-direction: column; min-height: 0;
+  /* **不写 `border-right`**:这条缝由 `css/layout.css` 里常驻的列分隔条
+     (`#rz-side::after`)负责。两边都画会在接缝上叠出 2px 的双线,而用户看到的是
+     「能拖的那条线」与「实际画出来的那条线」不是同一条 —— 那正是他报的问题。
+     分界线只该有一个来源,而且它就在可拖动的那条命中带上。 */
+  background: var(--card);
+}
+
+/* ---- 品牌 ---- */
+#sidebar > .brand { padding: 18px 18px 14px; }
+.brand h1 { font-size: 16px; margin: 0 0 3px; letter-spacing: .01em; }
+.subtitle { color: var(--ink-3); font-size: 12px; margin: 0; }
+
+/* ---- 导航(设计稿 §6)
+   导航项是 `<a href="#/…">`,不是 button —— 点它只改 hash,由 `hashchange` 驱动路由。
+   这样中键/新标签打开、以及地址栏回退都白拿,而且不需要在 shell 里再绑一次点击。 */
+.nav { display: flex; flex-direction: column; gap: 2px; padding: 0 10px 6px; }
+.navitem {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 10px; text-decoration: none;
+  color: var(--ink-2); font-size: 13.5px;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.navitem:hover { background: #f4f7fc; color: var(--ink); }
+.navitem.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.navitem .ni { width: 16px; text-align: center; font-size: 13px; opacity: .9; }
+
+/* ---- 我的探索(设计稿 §7) ---- */
+.explore { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-top: 6px; }
+.ex-head { padding: 0 18px; margin-top: 4px; }
+
+#new-topic { display: flex; gap: 6px; padding: 4px 12px 10px; }
+#new-topic input {
+  flex: 1; min-width: 0; padding: 8px 12px; font: inherit; font-size: 13px;
+  border: 1px solid var(--line); border-radius: var(--r-inp); background: #fff;
+}
+#new-topic input::placeholder { color: var(--ink-3); }
+#new-topic input:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+#new-topic .btn { border-radius: var(--r-inp); padding: 8px 11px; }
+
+#topics { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+.topic {
+  padding: 9px 10px; border-radius: 11px; cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 2px;
+  transition: background var(--dur-1) var(--ease);
+}
+.topic:hover { background: #f4f7fc; }
+.topic.active { background: var(--accent-soft); border-color: #c3d6ff; }
+.t-row { display: flex; align-items: center; gap: 6px; }
+.t-title { flex: 1; min-width: 0; font-weight: 600; font-size: 13.5px; color: var(--ink);
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-del { border: 0; background: transparent; color: var(--ink-3); padding: 0 3px;
+         border-radius: 6px; visibility: hidden; line-height: 1; font-size: 13px; }
+.topic:hover .t-del { visibility: visible; }
+.t-del:hover { color: var(--bad); background: var(--bad-soft); }
+.t-meta { color: var(--ink-3); font-size: 11.5px; margin-top: 3px;
+          display: flex; align-items: center; gap: 6px; }
+/* 主题条目上的进度条:只在有节点时出现(空主题画一条 0% 的槽没有信息量)。 */
+.bar { height: 4px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ok); border-radius: 3px;
+           transition: width var(--dur-2) var(--ease); }
+.topic .bar { margin-top: 7px; }
+
+/* ---- 学习进度卡(设计稿 §8) ----
+   数据源是**当前主题**的 `progress`(与顶栏那个 42% 同一个数,同为后端 `percent`)。
+   没有选中主题时整张卡不渲染 —— 显示一个 0% 的空卡会被读成「一个知识点都没学」。 */
+.progress { padding: 0 12px 14px; }
+.progcard { padding: 13px 14px; }
+.pc-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px;
+           color: var(--ink-2); margin-bottom: 9px; }
+.pc-head .ni { color: var(--accent-2); }
+.pc-row { display: flex; align-items: center; gap: 9px; }
+.pc-row .bar { flex: 1; height: 6px; }
+.pc-pct { font-size: 13px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pc-sub { color: var(--ink-2); font-size: 12px; margin-top: 8px; }
+.pc-sub strong { color: var(--ink); font-weight: 600; }

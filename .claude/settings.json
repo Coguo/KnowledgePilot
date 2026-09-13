@@ -6,7 +6,8 @@
       "Bash(D:/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/python.exe -m pip list)",
       "Read(//d/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/conda-meta/**)",
       "Read(//d/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/Lib/site-packages/**)",
-      "Bash(\"D:/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/python.exe\" -m pytest tests/test_agent_eval_dataset.py tests/test_agent_eval_offline.py tests/test_agent_eval_metrics.py -q)"
+      "Bash(\"D:/Code/Anaconda/Anaconda_envs/envs/knowledgepilot/python.exe\" -m pytest tests/test_agent_eval_dataset.py tests/test_agent_eval_offline.py tests/test_agent_eval_metrics.py -q)",
+      "Bash(echo \"=== Global tier \\(~/.engramory\\) ===\" && ls -la \"C:/Users/12566/.engramory/\" 2>/dev/null || echo \"\\(does not exist\\)\"; echo; echo \"=== Project tier \\(memory/ at project root\\) ===\" && ls -la \"d:/Code/Project/Python/KnowledgePilot/memory/\" 2>/dev/null || echo \"\\(does not exist\\)\")"
     ]
   }
 }

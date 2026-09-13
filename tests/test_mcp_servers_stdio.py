@@ -69,6 +69,35 @@ async def test_memory_server_stdio_list_and_call(tmp_path):
             assert "未找到相关历史研究记录" in call_result_to_text(res3)
 
 
+async def test_memory_server_sees_writes_made_after_connect(tmp_path):
+    """长驻复用（Phase 8）：子进程连接后父进程写库，同一会话再次调用必须看到新数据。
+
+    这是 memory server「每次 tool call 现开现关」的直接验收——若缓存进程级 store 单例，
+    第二次调用会读到连接时的旧快照（Windows 上还会常驻 db 文件句柄）。
+    """
+    db_path = str(tmp_path / "memory.db")
+    store = create_memory_store(db_path)
+    store.save_run("初始研究主题", report="占位", sources=[])
+    store.close()
+
+    async with stdio_client(_params(MEMORY_MODULE, {"MEMORY_DB_PATH": db_path})) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            # 连接后、写入前：新主题查不到。
+            before = await session.call_tool("search_memory", {"query": "长驻复用", "top_k": 3})
+            assert "未找到相关历史研究记录" in call_result_to_text(before)
+
+            # 父进程在两次 tool call 之间落库一条新研究。
+            writer = create_memory_store(db_path)
+            writer.save_run("MCP 长驻复用", report="子进程不缓存连接", sources=[])
+            writer.close()
+
+            # 同一个长驻会话再次调用 → 必须命中新写入。
+            after = await session.call_tool("search_memory", {"query": "长驻复用", "top_k": 3})
+            assert "长驻复用" in call_result_to_text(after)
+
+
 async def test_papers_server_stdio_lists_tool(tmp_path):
     """papers server：真实子进程握手 + 列 search_papers（不真调，避免联网）。"""
     async with stdio_client(_params(PAPERS_MODULE)) as (read, write):

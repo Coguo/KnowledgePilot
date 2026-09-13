@@ -11,6 +11,9 @@ __pycache__/
 *$py.class
 *.egg-info/
 .pytest_cache/
+# 打包产物（`python -m build` 的输出；验证 wheel 是否带上 web/ 时才会产生）
+dist/
+build/
 .venv/
 venv/
 .env

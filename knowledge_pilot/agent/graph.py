@@ -31,6 +31,7 @@ from knowledge_pilot.agent.events import (
     EvalEvent,
     KgEvent,
     MemoryEvent,
+    NodesEvent,
     PlanEvent,
     StatusEvent,
     TokenEvent,
@@ -40,6 +41,7 @@ from knowledge_pilot.kg.extract import build_kg_context, extract_entities_relati
 from knowledge_pilot.kg.graph import GraphStore, match_query_entities
 from knowledge_pilot.llm.client import LLMClient
 from knowledge_pilot.llm.json_utils import parse_json_object
+from knowledge_pilot.llm.streaming import stream_text
 from knowledge_pilot.memory.context import build_memory_context
 from knowledge_pilot.memory.store import ResearchMemoryStore
 from knowledge_pilot.search.base import SearchProvider, SearchResult
@@ -49,6 +51,12 @@ DEFAULT_MAX_ITERATIONS = 3
 
 # 知识图谱抽取用的证据文本长度上限（防超长 token；超出截断）。
 KG_EVIDENCE_MAX_CHARS = 8000
+
+# 学习侧「抽取知识点」这一步的输出预算。**给得比 synthesize 的 4096 宽**：同一个
+# 推理模型（deepseek-flash 之类）的 reasoning_content 与正文**共用**这个预算，而
+# 预算被推理吃光时正文会是**空字符串且不报错**——4096 下实测推理就能吃掉 3000+。
+# 这条不是「多给点更保险」，是这类模型上「不给够就等于没有输出」。
+EXTRACT_MAX_TOKENS = 8192
 
 # 所有「输出 JSON」的 system prompt 必须包含单词 "json"：DeepSeek 的 json_object
 # 模式硬性要求 prompt 出现该词，否则返回 HTTP 400。
@@ -105,6 +113,11 @@ class ResearchState(TypedDict):
     refined_instruction: str
     kg_context: str  # Phase 5：构建出的「相关实体关系」prompt 块（空 = 未启用/无命中）
     report: str
+    # 学习侧（extract 收尾）：从资料抽出的知识点**原始** dict 列表（未清洗、未建图——
+    # 清洗与建图是 `learning/path.py` 的事，agent 层不认识「知识点」这个词）。
+    # 只在 extract 收尾时写入；`synthesize` 收尾的路径里它一直缺席，所以读它一律用
+    # `state.get("nodes")`——旧 checkpoint 里没有这个键。
+    nodes: list[dict]
 
 
 # ---- 节点 ---------------------------------------------------------------
@@ -153,6 +166,7 @@ async def research_node(
     search: SearchProvider,
     rag: object | None = None,
     mcp: object | None = None,  # Phase 6 打开的 MCPGateway；None 时行为与 Phase 5 一致
+    max_tool_rounds: int | None = None,  # Phase 9 透传给 run_research；None → 用其常量
 ) -> dict:
     """跑 Agentic 工具循环收集证据；转发工具事件，丢弃过程 token 与内层 DoneEvent。
 
@@ -210,6 +224,7 @@ async def research_node(
         system_prompt=step_prompt,
         mcp=mcp,
         on_extra_tool_result=collect_note,
+        max_tool_rounds=max_tool_rounds,
     ):
         # 只转发工具事件：研究阶段的过程 token 与内层 DoneEvent 不应出现在最终流里。
         if isinstance(evt, (TokenEvent, DoneEvent)):
@@ -265,6 +280,10 @@ async def synthesize_node(state: ResearchState, *, llm: LLMClient, search: objec
 
     notes（Phase 6，默认空）：非空时在用户内容末尾追加「工具补充资料（MCP）」块。
     notes 按内容去重后渲染（跨研究轮可能重复）；为空则字符串与 Phase 5 逐字节一致。
+
+    Phase 9：报告经 `_report_text` 获取——LLM 实现了 `stream_complete` 时先逐字推
+    TokenEvent 再补 DoneEvent（长报告不再让用户干等），否则退回 `complete`（既有测试
+    路径逐字节不变）。两种路径的最终 `DoneEvent.content` 一定等于 token 拼接。
     """
     writer = get_stream_writer()
     writer(StatusEvent(message="正在综合撰写报告…"))
@@ -288,9 +307,70 @@ async def synthesize_node(state: ResearchState, *, llm: LLMClient, search: objec
         {"role": "system", "content": SYNTHESIZE_PROMPT},
         {"role": "user", "content": user_content},
     ]
-    report = await llm.complete(prompt, max_tokens=4096)
+    report = await _report_text(llm, prompt, writer, max_tokens=4096)
     writer(DoneEvent(content=report))
     return {"report": report}
+
+
+async def extract_node(
+    state: ResearchState,
+    *,
+    llm: LLMClient,
+    system_prompt: str,
+    max_tokens: int = EXTRACT_MAX_TOKENS,
+) -> dict:
+    """学习侧收尾节点：**直接从资料抽出知识点**，不写报告。
+
+    它替代的是一条真实存在的故障链：`synthesize` 写长报告（4096 预算，推理模型会
+    把预算吃光）→ 正文空 → 学习侧拿到空报告 → 降级成「一个节点」。报告本身又只是
+    中间产物（学的是节点，不是报告），所以这里是**把中间产物删掉**，而不是把它的
+    预算调大。
+
+    输入复用 `synthesize` 那一份（研究问题 + 研究计划 + 已收集资料），只是最后一步
+    从「写文章」换成「输出 JSON」：JSON 短得多，且同一份预算下的失败模式是
+    「抽得差」而不是「一个字都没有」。
+
+    与 synthesize 的两处刻意不同：
+    - **不流式**。JSON 逐字吐给用户没有意义（他要点的是那张图），所以走 `complete`;
+    - **异常不抛**。抽取失败 = 交不出节点 = 由调用方降级（研究计划 → 线性路径），
+      与研究图别处的「永不阻断」取舍一致。`llm.complete` 抛出的错误在这里被吃掉，
+      但它同时会让 planner/evaluate 也失败 → 计划为空 → 由调用方落 failed（那才是
+      该报错的场合，且报得出来）。
+
+    `system_prompt` 由调用方注入（学习层给 `LEARNING_PATH_PROMPT`）：agent 层不认识
+    「知识点」，它只负责「按这个 prompt 要一份 {nodes, summary} 的 JSON」。
+    """
+    writer = get_stream_writer()
+    writer(StatusEvent(message="正在从资料中抽取知识点…"))
+    user_content = (
+        f"研究问题：{state['query']}\n"
+        f"研究计划：{json.dumps(state.get('plan') or [], ensure_ascii=False)}\n"
+        f"已收集资料（含来源）：\n"
+        f"{_build_kg_extraction_text(state.get('evidence') or []) or '（暂无）'}"
+    )
+    prompt = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    try:
+        raw = await llm.complete(
+            prompt, response_format={"type": "json_object"}, max_tokens=max_tokens
+        )
+    except Exception:  # noqa: BLE001 — 见 docstring：交不出节点由调用方降级
+        raw = ""
+
+    parsed = parse_json_object(raw)
+    nodes = parsed.get("nodes") if isinstance(parsed, dict) else None
+    nodes = [n for n in nodes if isinstance(n, dict)] if isinstance(nodes, list) else []
+    summary = str(parsed.get("summary") or "").strip() if isinstance(parsed, dict) else ""
+    if not nodes:
+        writer(StatusEvent(message="这一轮没有抽取出知识点"))
+    writer(NodesEvent(nodes=nodes, summary=summary))
+    # `state["report"]` 在这里存的是**一句话结论**：记忆召回（`memory/context.py`
+    # 的 `_report_head`）与主题摘要都读这个字段，报告没了也得有东西可填。
+    # 它同时是 DoneEvent 的正文——`_drive` 的兜底分支（`values["report"]`）因此照常成立。
+    writer(DoneEvent(content=summary))
+    return {"nodes": nodes, "report": summary}
 
 
 async def kg_node(state: ResearchState, *, llm: LLMClient, kg_hops: int = 2) -> dict:
@@ -347,6 +427,8 @@ def _build_app(
     kg_enabled: bool = False,
     kg_hops: int = 2,
     mcp: object | None = None,
+    max_tool_rounds: int | None = None,
+    extract_prompt: str | None = None,
 ):
     """现建现编译（每次运行独立，天然并发隔离）。
 
@@ -354,6 +436,20 @@ def _build_app(
     kg_enabled（Phase 5）：在 evaluate（充分）与 synthesize 之间插入 kg 节点；
     禁用时图结构与 Phase 3/4 逐字节一致。mcp（Phase 6，默认 None）：research 节点
     透传 MCP 网关；None 时节点行为与 Phase 5 一致。
+
+    extract_prompt（第六轮，默认 None）：**非空时收尾节点换成 `extract`**（按这个
+    prompt 要一份 {nodes, summary} 的 JSON），而不是 `synthesize` 写报告。默认 None
+    时图结构与 Phase 9 逐字节一致——`/api/chat`、eval、既有约 40 条图测试全都走在
+    老路上，报告照旧生成。收尾节点是一个**参数**而不是一个布尔开关：「要不要抽取」
+    与「按什么 prompt 抽取」在这里本来就是同一件事，两个参数会多出一种自相矛盾的
+    组合（要抽取但没 prompt）。
+
+    条件边只改**目标映射**（字面量 `"synthesize"` → 实际收尾节点），`route_after_evaluate`
+    一行不动——它的返回值表达的是「研究够了，去收尾」，收尾是谁由这里决定。
+
+    max_tool_rounds（Phase 9）经 partial 注入 research 节点，**不写进 ResearchState**：
+    改被 checkpoint 序列化的 TypedDict 会让旧 checkpoint 反序列化时缺字段，而它本身就是
+    每次运行固定的配置，不是会随迭代变化的状态。
     """
     builder = StateGraph(ResearchState)
     builder.add_node(
@@ -361,22 +457,38 @@ def _build_app(
         partial(planner_node, llm=llm, search=search, rag=rag, memory_context=memory_context),
     )
     builder.add_node(
-        "research", partial(research_node, llm=llm, search=search, rag=rag, mcp=mcp)
+        "research",
+        partial(
+            research_node,
+            llm=llm,
+            search=search,
+            rag=rag,
+            mcp=mcp,
+            max_tool_rounds=max_tool_rounds,
+        ),
     )
     builder.add_node("evaluate", partial(evaluate_node, llm=llm, search=search, rag=rag))
-    builder.add_node("synthesize", partial(synthesize_node, llm=llm, search=search, rag=rag))
+    terminal = "extract" if extract_prompt else "synthesize"
+    if extract_prompt:
+        builder.add_node(
+            "extract", partial(extract_node, llm=llm, system_prompt=extract_prompt)
+        )
+    else:
+        builder.add_node(
+            "synthesize", partial(synthesize_node, llm=llm, search=search, rag=rag)
+        )
     if kg_enabled:
         builder.add_node("kg", partial(kg_node, llm=llm, kg_hops=kg_hops))
-        builder.add_edge("kg", "synthesize")
+        builder.add_edge("kg", terminal)
     builder.add_edge(START, "planner")
     builder.add_edge("planner", "research")
     builder.add_edge("research", "evaluate")
     builder.add_conditional_edges(
         "evaluate",
         route_after_evaluate,
-        {"research": "research", "synthesize": "kg" if kg_enabled else "synthesize"},
+        {"research": "research", "synthesize": "kg" if kg_enabled else terminal},
     )
-    builder.add_edge("synthesize", END)
+    builder.add_edge(terminal, END)
     return builder.compile(checkpointer=checkpointer or MemorySaver())
 
 
@@ -430,13 +542,15 @@ async def run_research_graph(
     kg_enabled: bool = False,
     kg_hops: int = 2,
     mcp: object | None = None,  # Phase 6 MCPGateway；None 时行为与 Phase 5 逐字节一致
+    max_tool_rounds: int | None = None,  # Phase 9：research 节点每轮的工具调用轮次上限
+    extract_prompt: str | None = None,  # 第六轮：非空则**不写报告**，按它抽节点（见 `_build_app`）
 ) -> AsyncIterator[object]:
-    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/kg/done）。
+    """驱动一次 LangGraph 研究任务，产出事件流（plan/status/tool/eval/memory/kg/nodes/done）。
 
     memory（Phase 4，默认 None 行为与 Phase 3 逐字节一致）：非空时——
     开跑前召回相关历史注入 planner（并先发 MemoryEvent 提示），流结束后把本次
-    研究落库；同时图 checkpoint 持久化到 checkpoint_db（SqliteSaver，懒导入失败
-    回退 MemorySaver）。MemorySaver 编译后要求 thread_id；图每次现建现编译，
+    研究落库；同时图 checkpoint 持久化到 checkpoint_db（AsyncSqliteSaver，懒导入
+    失败回退 MemorySaver）。MemorySaver 编译后要求 thread_id；图每次现建现编译，
     thread_id 每次唯一。
 
     kg_enabled（Phase 5，默认 False 行为与 Phase 4 逐字节一致）：在 evaluate 与
@@ -445,6 +559,10 @@ async def run_research_graph(
 
     mcp（Phase 6，默认 None 行为与 Phase 5 逐字节一致）：MCP 网关，research 节点
     用它把 server 工具并入研究循环，MCP 输出经 notes 累加器在 synthesize 渲染。
+
+    extract_prompt（第六轮，默认 None 行为与 Phase 9 逐字节一致）：非空时收尾节点是
+    `extract`（发 `NodesEvent` 而不是写报告），供学习侧「只要图谱与关键词」的生成流程
+    使用（见 `api/learning.py`）。
     """
     # 1) 记忆召回：新研究开始前，看用户以前研究过什么。
     memory_context = None
@@ -465,22 +583,26 @@ async def run_research_graph(
         "refined_instruction": "",
         "kg_context": "",
         "report": "",
+        "nodes": [],
     }
     config = {"configurable": {"thread_id": f"research-{uuid4().hex}"}}
     sink: dict = {}
 
-    # 2) 编译图：memory 启用时用 SqliteSaver 持久化 checkpoint（懒导入，失败回退）。
+    # 2) 编译图：memory 启用时用 **Async**SqliteSaver 持久化 checkpoint（懒导入，失败回退）。
+    #    必须是 async 版：图由 `_drive` 的 `app.astream` 异步驱动，同步 SqliteSaver 的
+    #    aget_tuple/aput 会直接抛 NotImplementedError（langgraph ≥1.0 起生效）——
+    #    即「memory 开启的 graph 研究」整条链路不可用。
     saver_cm = None
     if memory is not None and checkpoint_db:
         try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-            saver_cm = SqliteSaver.from_conn_string(checkpoint_db)
+            saver_cm = AsyncSqliteSaver.from_conn_string(checkpoint_db)
         except ImportError:
-            saver_cm = None  # 未装 langgraph-checkpoint-sqlite → 回退 MemorySaver
+            saver_cm = None  # 未装 langgraph-checkpoint-sqlite / aiosqlite → 回退 MemorySaver
 
     if saver_cm is not None:
-        with saver_cm as saver:
+        async with saver_cm as saver:
             app = _build_app(
                 llm=llm,
                 search=search,
@@ -490,6 +612,8 @@ async def run_research_graph(
                 kg_enabled=kg_enabled,
                 kg_hops=kg_hops,
                 mcp=mcp,
+                max_tool_rounds=max_tool_rounds,
+                extract_prompt=extract_prompt,
             )
             async for payload in _drive(app, state, config, sink):
                 yield payload
@@ -503,6 +627,8 @@ async def run_research_graph(
             kg_enabled=kg_enabled,
             kg_hops=kg_hops,
             mcp=mcp,
+            max_tool_rounds=max_tool_rounds,
+            extract_prompt=extract_prompt,
         )
         async for payload in _drive(app, state, config, sink):
             yield payload
@@ -521,6 +647,30 @@ async def run_research_graph(
 
 
 # ---- 工具函数 -----------------------------------------------------------
+
+
+async def _report_text(llm: LLMClient, prompt: list[dict], writer: Callable, *, max_tokens: int) -> str:
+    """取报告全文：LLM 有 `stream_complete` 就逐字推 TokenEvent，否则退回 `complete`。
+
+    **能力探测式降级**是本轮最关键的取舍。无条件改用流式会让
+    `tests/test_api.py`、`test_agent_graph.py`、`test_kg_graph.py`、`test_mcp_graph.py`、
+    `test_agent_eval_runner.py` 约 40 条断言（`complete_calls` 计数、`frames[-2]` 的
+    事件序列）全部需要改写——它们依赖 Fake 客户端「用 complete 产出报告」。
+    而 Fake 与 `agent/eval/real.py::CountingChatClient` 都没有 `stream_complete`，
+    探测即降级 → 那些测试一行不用动，真实评测的调用计数口径也不漂移；只有生产
+    `ChatClient` / `ModelGateway` 实现了它，用户才看到报告逐字到达。
+
+    不变量：返回值恒等于**推出去的 token 拼接**，故前端「token 优先、done 兜底」
+    两种渲染路径结果一致；`DoneEvent` 仍由 synthesize_node 发出 → `_drive` 的
+    `saw_done` 与 checkpoint 兜底分支一行不动。
+
+    实现搬去了 `llm/streaming.py::stream_text`（Phase 9 的节点讲解也要同一套判断），
+    这里只把「每段回吐 → TokenEvent」这一步接上。
+    """
+    return await stream_text(
+        llm, prompt, max_tokens=max_tokens,
+        on_delta=lambda delta: writer(TokenEvent(delta)),
+    )
 
 
 def _format_evidence(items: list[EvidenceItem]) -> str:
