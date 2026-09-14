@@ -20,6 +20,8 @@ from knowledge_pilot.agent.graph import (
     run_research_graph,
 )
 from knowledge_pilot.learning.path import LEARNING_PATH_PROMPT
+from knowledge_pilot.llm.json_utils import parse_json_object
+from knowledge_pilot.llm.providers import THINKING_OFF
 from knowledge_pilot.search.stub import StubSearchProvider
 
 from tests.fakes import FakeChatClient
@@ -50,13 +52,16 @@ class _ExtractFails(FakeChatClient):
         super().__init__(**kwargs)
         self.raised = 0  # 断言「确实炸过」：否则这条用例在「压根没触发」时也会绿
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         if messages and "学习路径" in str(messages[0].get("content", "")):
             self.complete_calls += 1
             self.raised += 1
             raise RuntimeError("上游 500")
         return await super().complete(
-            messages, max_tokens=max_tokens, response_format=response_format
+            messages,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            extra_body=extra_body,
         )
 
 
@@ -117,7 +122,45 @@ async def test_extract_uses_the_injected_prompt_with_a_wide_budget():
 
     assert _extract_prompt_seen(llm) == LEARNING_PATH_PROMPT
     assert llm.seen_response_formats[-1] == {"type": "json_object"}
-    assert EXTRACT_MAX_TOKENS == 8192 and EXTRACT_MAX_TOKENS > 4096
+    assert EXTRACT_MAX_TOKENS == 16384 and EXTRACT_MAX_TOKENS > 4096
+
+
+async def test_extract_turns_thinking_off_and_only_on_that_call():
+    """抽取这一次调用带上「关掉思考」的方言；planner/evaluate 不带。
+
+    这是第七轮那个 bug 的**唯一**机械保证。推理模型的 `reasoning_content` 与正文共用
+    `max_tokens`，实测一次真实抽取里推理吃掉 19474 字、正文只剩 1418 字且断在半句，
+    于是 12 个知识点的好答案变成 0 个、下游静默降级成研究计划。关掉之后 reasoning 为 0、
+    `finish_reason` 由 `length` 转 `stop`。
+
+    后半句（「只有这一次」）不是凑数：把开关加到**每一次**调用上会让 planner/evaluate
+    也失去推理，那是另一件事，而这里不该悄悄发生。
+    """
+    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, NODES_JSON])
+    await _run("RAG 怎么切分", llm, extract_prompt=LEARNING_PATH_PROMPT)
+
+    assert llm.seen_extra_bodies == [None, None, THINKING_OFF] == [None, None, {"thinking": {"type": "disabled"}}]
+    assert llm.seen_complete_max_tokens == [None, None, EXTRACT_MAX_TOKENS]
+
+
+async def test_extract_salvages_the_nodes_out_of_a_truncated_reply():
+    """正文断在半句时救回已完整的节点，而不是整份丢掉。
+
+    夹具就是实测那次截断的形状：最后一个节点写到 `"key_points"` 中途就没了（少了收尾的
+    `]}`）。`parse_json_object` 对它是 None——上一个版本因此交白卷、降级成研究计划。
+    """
+    truncated = NODES_JSON[: NODES_JSON.rindex('"key_points"')]
+    assert parse_json_object(truncated) is None, "夹具必须先真的解析不出来，否则这条用例是空的"
+
+    llm = _fake([PLANNER_JSON, EVAL_SUFFICIENT, truncated])
+    events = await _run("RAG 怎么切分", llm, extract_prompt=LEARNING_PATH_PROMPT)
+
+    nodes_event = next(e for e in events if isinstance(e, NodesEvent))
+    assert [n["name"] for n in nodes_event.nodes] == ["文本切分"], "完整的那个节点必须被救回来"
+    # 摘要写在数组**之后**，被截断时它必然一起丢——这不是缺陷，是 JSON 的顺序使然；
+    # `learning` 层对空 summary 有兜底（`_lead(outline)`）。
+    assert nodes_event.summary == ""
+    assert events[-1].content == ""
 
 
 async def test_extract_feeds_the_research_plan_and_the_evidence():

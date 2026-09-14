@@ -121,6 +121,65 @@ test('view():百分比只读后端值 —— 1/8 显示 12 而不是 13(R6)', ()
   assert.ok(!html.includes('13%'), '前端自己算了百分比');
 });
 
+// ---- 降级可见(第七轮)-------------------------------------------------------
+//
+// 抽取失败时后端静默降级成「拿研究计划的每一步当节点」,而产物看起来完全像一张
+// 正常的图(节点数、边数、`status=ready` 都对)。这三条钉住的是那唯一的补救:
+// 让用户在图上**看得见**它不是抽出来的,并且知道能去哪儿重来。
+
+test('view():每个节点都没有关键词 → 出提示,并指路设置页', () => {
+  const html = graphView.view(F.degraded(), {});
+  assert.ok(html.includes('class="notice"'), '降级图没有提示,用户无法分辨');
+  assert.ok(html.includes('没有经过知识点抽取'), '提示没说清这张图是怎么来的');
+  // 指路要具体到「设置页 →「当前探索」→「重新研究并生成」」。只说「可以重新生成」
+  // 等于没说 —— 顶栏按设计稿 §23 本来就没有那个按钮(见 graph.js 的 header 注释),
+  // 用户找不到入口。这条路径是不是**真的存在**,由下面「设置页」那组里的
+  // 「降级提示指的路,在设置页里真的存在」机械守住。
+  assert.ok(html.includes('设置页 →「当前探索」→「重新研究并生成」'),
+    '提示没有告诉用户去哪儿重来');
+  // 顶栏那个按钮**不许**因为这条提示回来:重跑会按新的 order_index 重算 note_path,
+  // 把用户写在正文里的「## 我的笔记」变成孤儿。
+  assert.ok(!html.includes('id="regen"'), '为了提示把顶栏那个重生成按钮加回来了');
+  assert.ok(!html.includes('id="regen-graph"'), '新增了一个顶栏重生成入口');
+});
+
+test('view():只要有一个节点带关键词,就不出提示', () => {
+  // 「每个都空」是判据,不是「有空的」。判据松成「任一为空」的话,一张正常图里
+  // 偶尔有一个抽得潦草的节点就会让整张图被打上「没抽过」的标签 —— 那比不提示更糟。
+  const g = F.degraded();
+  g.nodes[1] = F.node({ id: 'p1', order_index: 1, key_points: ['交叉编码器重排'] });
+  const html = graphView.view(g, {});
+
+  assert.ok(!html.includes('没有经过知识点抽取'), '有一个节点有要点,不该判成降级');
+  // 提示没了,但图本身一个都不能少 —— 「不加提示」不等于「少画东西」。
+  assert.equal(boxesOf(html).length, g.nodes.length);
+  assert.ok(html.includes('id="graph-scroll"'));
+});
+
+test('view():空图不出提示 —— 那是「还没生成」,另有说法', () => {
+  const html = graphView.view(F.emptyGraph(), {});
+  assert.ok(!html.includes('没有经过知识点抽取'), '空图被当成了抽取失败');
+  assert.ok(!html.includes('class="notice"'), '空图不该出现这条提示');
+});
+
+test('view():判据认的是症状,不是「章节」这个类型', () => {
+  // 降级有**两条**路径(`nodes_from_headings` 按标题分章 / `nodes_from_plan` 拿
+  // 研究计划每步当节点),`chain` 夹具是前一条、`degraded` 是后一条。判据不依赖
+  // 是哪一条来的,所以两条都要提示。
+  const chainHTML = graphView.view(F.chain(4), {});
+  assert.ok(chainHTML.includes('没有经过知识点抽取'), '按标题分章的那条降级路径漏掉了');
+
+  // 反过来:类型写着「章节」但关键词是有内容的 → **不能**提示。这张图是模型
+  // 真抽出来的,只是它给这个知识点标了「章节」;判据写成 `type === '章节'` 时
+  // 这里会误报,而误报的代价是让用户以为自己的图坏了。
+  const g = F.chain(2);
+  assert.equal(g.nodes[0].type, '章节', '夹具的前提是类型真的写着「章节」');
+  g.nodes[0].key_points = ['定长切分'];
+  g.nodes[1].key_points = ['递归切分'];
+  assert.ok(!graphView.view(g, {}).includes('没有经过知识点抽取'),
+    '按类型判的话这里会误报 —— 判据必须是空关键词');
+});
+
 test('header():空主题 total 为 0 时不显示「已掌握 0 · 0%」以外的完成态措辞', () => {
   const g = F.emptyGraph();
   const html = graphView.header(g, {});
@@ -1994,6 +2053,33 @@ test('设置页:两个危险动作都写着代价,而且**不在顶栏**', () =>
   // 百分比只读后端值:1/8 是 12 而不是 13。
   assert.ok(html.includes('12%'), '没有读到后端给的 percent');
   assert.ok(!html.includes('13%'), '自己算成了 13% —— 银行家舍入');
+});
+
+test('降级提示指的路,在设置页里真的存在', () => {
+  // 第七轮的真 bug,也是这条测试存在的理由:提示让人去「设置页 →「进阶」」,而设置页
+  // 里**根本没有**「进阶」这个分区(整个 `views/settings.js` 里连这两个字都 grep 不到)。
+  // 用户照着找,找不到,多半会认为「这系统就是这样」。**指错路的提示比不指路更糟。**
+  //
+  // 所以不把两个名字各抄一遍(那样只是把同一句话写在两处,一起烂掉),而是把提示里
+  // 用「」引起来的每个词都当成**指针**来验:它必须能在设置页渲染出来的 HTML 里找到。
+  // 将来改设置页的分区名或按钮名(或改提示却指向一个不存在的地方),这里就红。
+  const notice = graphView.degradedHTML(F.degraded());
+  const names = (notice.match(/「[^」]+」/g) || []).map((s) => s.slice(1, -1));
+  assert.ok(names.length >= 2, `提示里没有用「」标出具体位置:${notice}`);
+
+  // 比的是**设置页上有名字的东西**(分区标题 + 按钮文字),不是整段 HTML 的子串。
+  // `page.includes('当前探索')` 是恒真的:删除按钮的标签写着「重置当前探索」,把它兜住了 ——
+  // 真去找的话,把卡片标题改掉这条断言也不红(实测过,所以这里多这层)。
+  const named = (html) => [
+    ...html.matchAll(/<h3>([^<]+)<\/h3>/g),
+    ...html.matchAll(/<button[^>]*>([^<]+)<\/button>/g),
+  ].map((m) => m[1].trim());
+
+  const g = F.degraded();
+  const pageNames = named(settingsView.pageHTML(g.topic, 0, true));
+  for (const name of names) {
+    assert.ok(pageNames.includes(name), `提示让人去「${name}」,而设置页上没有这个名字`);
+  }
 });
 
 test('设置页:轮次下拉反映当前偏好,并说明它存在哪儿', () => {

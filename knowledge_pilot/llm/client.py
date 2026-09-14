@@ -68,14 +68,22 @@ class ChatClient:
         *,
         max_tokens: int | None = None,
         response_format: dict | None = None,
+        extra_body: dict | None = None,
     ) -> str:
-        """非流式补全：一次返回完整回复（Query Rewrite / Planner / Evaluate 等短任务用）。"""
-        resp = await self._client.chat.completions.create(
-            model=self._settings.deepseek_model,
-            messages=messages,
-            max_tokens=max_tokens,
-            response_format=response_format,
-        )
+        """非流式补全：一次返回完整回复（Query Rewrite / Planner / Evaluate 等短任务用）。
+
+        `extra_body` **仅非 None 时**才写进 body——本方法与 `ModelGateway.complete`
+        的外发 JSON 必须逐字节相同（B 轨 parity 铁律），所以这条约定两边一字不差。
+        """
+        kwargs: dict = {
+            "model": self._settings.deepseek_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "response_format": response_format,
+        }
+        if extra_body is not None:
+            kwargs["extra_body"] = extra_body
+        resp = await self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
     async def stream_complete(

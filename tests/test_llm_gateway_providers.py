@@ -112,7 +112,8 @@ def _provider(recorder: Recorder, **kwargs) -> tuple[ProviderClient, httpx.Async
     return provider, http
 
 
-def _run(recorder: Recorder, provider_kwargs=None, gateway_kwargs=None, *, kind="complete"):
+def _run(recorder: Recorder, provider_kwargs=None, gateway_kwargs=None, *, kind="complete",
+         extra_body=None):
     """跑一次 complete/stream，返回 (结果, recorder)；自动关闭注入的 httpx 客户端。"""
     provider, http = _provider(recorder, **(provider_kwargs or {}))
     gw = ModelGateway([provider], **(gateway_kwargs or {}))
@@ -121,7 +122,7 @@ def _run(recorder: Recorder, provider_kwargs=None, gateway_kwargs=None, *, kind=
     async def main():
         try:
             if kind == "complete":
-                return await gw.complete(messages, max_tokens=64)
+                return await gw.complete(messages, max_tokens=64, extra_body=extra_body)
             return [c async for c in gw.stream_chat(messages, tools=[])]
         finally:
             await http.aclose()
@@ -140,6 +141,46 @@ def test_provider_complete_parses_usage_and_body():
     assert body["messages"] == [{"role": "user", "content": "hi"}]
     assert body["max_tokens"] == 64
     assert "stream" not in body  # 非流式不带 stream
+
+
+def test_provider_complete_sends_no_extra_key_by_default():
+    """不传 `extra_body` 时外发 body 里**一个字节都不多**（第七轮）。
+
+    这条是 B 轨 parity 铁律的另一半：`extra_body` 是给 provider 方言用的逃生口，
+    默认必须是「不存在」而不是「None」。写成 `extra_body=None` 塞进 body 的话，
+    `test_default_gateway_matches_chatclient` 里那次逐字节比较仍会过（两边一起变），
+    但线上每个请求都会多带一个没用的键 —— 而有些兼容端点对未知键是**直接 400**。
+    """
+    rec = Recorder([_ok("你好")])
+    _run(rec)
+    assert "extra_body" not in rec.bodies[0]
+    assert "thinking" not in rec.bodies[0]
+
+
+def test_provider_complete_merges_extra_body_flat_into_the_request():
+    """传了就**平铺**进 body —— `{"thinking": {"type": "disabled"}}`，不是嵌在某个键下。
+
+    这是实测确认过的方言形状（第七轮）：抽取那一步据此把推理模型的长思考关掉，
+    reasoning 由 19474 字降到 0、`finish_reason` 由 `length` 转 `stop`。
+    如果哪天 SDK 改成把 `extra_body` 原样塞进 `extra_body` 键，模型收到的就是一段
+    它不认识的参数 —— 那一刻不会报错，只会继续想，然后继续截断。
+    """
+    rec = Recorder([_ok("你好")])
+    from knowledge_pilot.llm.providers import THINKING_OFF
+
+    _run(rec, extra_body=THINKING_OFF)
+    body = rec.bodies[0]
+    assert body["thinking"] == {"type": "disabled"}
+    assert "extra_body" not in body
+    # 其余参数一个都没被挤掉。
+    assert body["max_tokens"] == 64 and body["model"] == _MODEL
+
+
+def test_stream_sends_no_thinking_dialect_even_when_the_switch_exists():
+    """流式路径**不带**这个方言 —— 抽取与提纲都不流式，开关刻意只加在 `complete` 上。"""
+    rec = Recorder([_stream_ok()])
+    _run(rec, kind="stream")
+    assert "thinking" not in rec.bodies[0]
 
 
 def test_provider_stream_yields_content_and_no_stream_options_by_default():

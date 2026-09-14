@@ -138,6 +138,13 @@ path.edge.back { stroke-dasharray: 4 3; opacity: .7; }
 .filters { display: flex; gap: 6px; align-items: center; color: var(--ink-2);
            font-size: 12px; padding: 0 20px 6px; flex-wrap: wrap; }
 .filters:first-of-type { padding-top: 4px; }
+
+/* 「这张图不是抽出来的」提示(第七轮)。
+   它直接落在 `#stage` 里,是 `.topbar` / `.filters` 的**兄弟**,而 `.notice` 的
+   基础样式(见 base.css,给生成卡片那种「卡片内的提示」定的)没有左右留白 ——
+   不覆盖的话它会一路连到窗口边上,上下两块却都缩进 20px,一眼就看出是硬塞进来的。
+   只加左右与下边距,不动它自己的配色/字号。 */
+#stage > .notice { margin: 4px 20px 0; }
 .flabel { color: var(--ink-3); margin-right: 2px; }
 /* 末尾那句方向说明。原来是行内 `style="color:var(--ink-3)"` —— 挪进 CSS 是为了
    让 `views/graph.js` 的 header() 保持「纯字符串、零行内样式」,好在 Node 里整段断言。 */

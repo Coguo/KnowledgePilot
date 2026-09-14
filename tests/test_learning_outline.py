@@ -25,6 +25,7 @@ from knowledge_pilot.learning.outline import (
     clean_outline,
     generate_outline,
 )
+from knowledge_pilot.llm.providers import THINKING_OFF
 
 NODE = {
     "name": "文本切分",
@@ -48,9 +49,12 @@ class _LLM:
         self.calls = 0
         self.prompts: list = []
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.calls += 1
         self.prompts.append(messages)
+        # 第七轮：这两个参数是「提纲这一步有没有真的关掉思考 / 有没有预算」的唯一痕迹。
+        self.max_tokens = max_tokens
+        self.extra_body = extra_body
         if self.raises is not None:
             raise self.raises
         return self.reply
@@ -173,6 +177,45 @@ async def test_generate_outline_swallows_llm_failure_and_none_client():
 async def test_generate_outline_respects_max_items():
     llm = _LLM(_reply({"outline": [f"第{i}步" for i in range(20)]}))
     assert len(await generate_outline(llm, NODE, max_items=2)) == 2
+
+
+async def test_generate_outline_declares_a_budget_and_turns_thinking_off():
+    """这一次调用必须**自己带预算**，并带上「关掉思考」的方言（第七轮）。
+
+    原来它没传 `max_tokens`，走 provider 默认。实测推理 2571 字 / 正文 88 字——额度是
+    两边共用的，九成以上花在了「想」上，而这里要的只是一份短清单。越界时正文为空、
+    这一层返回 `[]`，界面上表现为「这个节点没有提纲」：**静默**。
+
+    钉住字面值（4096）而不是 `> 0`：这个数字就是「够一份 6 条的清单 + 一点推理余量」的
+    判断本身，改小到 2048 就不再够用，而那时候没有任何别的东西会喊。
+    """
+    llm = _LLM(_reply({"outline": ["一", "二", "三"]}))
+    await generate_outline(llm, NODE)
+
+    assert llm.max_tokens == outline_mod.OUTLINE_MAX_TOKENS == 4096
+    assert llm.extra_body == THINKING_OFF == {"thinking": {"type": "disabled"}}
+
+
+async def test_generate_outline_salvages_the_items_before_a_truncation():
+    """条目写到一半被截断时救回前面完整的那些，而不是整份丢掉。
+
+    提纲是**一条条字符串**，截断必然落在最后一条中间——那时一个括号都没闭合，
+    只认括号的修补无从下手（所以 `salvage_json` 把「数组里的字符串闭合」也算作边界）。
+    """
+    truncated = '{"outline": ["有哪些分块方法", "各自的切分规则", "会遇到什么问'
+    llm = _LLM(truncated)
+
+    assert await generate_outline(llm, NODE) == ["有哪些分块方法", "各自的切分规则"]
+
+
+async def test_generate_outline_still_writes_nothing_when_the_truncation_leaves_no_item():
+    """救不回来时仍然是「一个字节都不写」——「不留半成品」这条没有被 salvage 松掉。
+
+    截断发生在**第一条**中间时没有完整条目可救，这里必须还是 `[]`：半句话写进用户
+    自己的文件是这条契约唯一要防的事。
+    """
+    llm = _LLM('{"outline": ["有哪些分块方')
+    assert await generate_outline(llm, NODE) == []
 
 
 # ---- 回退哨：提纲每一条必须是「小点」（走查反馈 ②）--------------------------

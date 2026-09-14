@@ -73,7 +73,7 @@ class _CountingLLM:
         self.calls = 0
         self.prompts: list = []
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.calls += 1
         self.prompts.append(messages)
         return self.reply
@@ -94,7 +94,7 @@ class _ChatLLM(_CountingLLM):
         for delta in self.deltas:
             yield delta
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.calls += 1
         self.prompts.append(messages)
         if response_format:  # json_object → 判定调用
@@ -854,7 +854,7 @@ class _PathAndOutlineLLM(_CountingLLM):
     里写着「提纲」二字。
     """
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.calls += 1
         self.prompts.append(messages)
         blob = json.dumps(messages, ensure_ascii=False)
@@ -937,11 +937,13 @@ class _TwoVersionOutlineLLM(_PathAndOutlineLLM):
         self.versions = list(versions)
         self.n = 0
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         blob = json.dumps(messages, ensure_ascii=False)
         # 建图那条路径抽取（`PATH_JSON`）照旧 —— 只有提纲这条换序列。
         if "提纲" not in blob:
-            return await super().complete(messages, max_tokens=max_tokens, response_format=response_format)
+            return await super().complete(
+            messages, max_tokens=max_tokens, response_format=response_format, extra_body=extra_body
+        )
         self.calls += 1
         self.prompts.append(messages)
         items = self.versions[min(self.n, len(self.versions) - 1)]

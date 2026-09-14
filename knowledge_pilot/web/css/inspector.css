@@ -104,19 +104,32 @@
 #panel .sec:last-child { border-bottom: 0; margin-bottom: 0; }
 
 /* ---- 学习状态 ----
-   **这一段的排版是居中的**(其余各段仍然左对齐)。它整段只有三样东西:状态芯片、
-   一句话说明、一个通栏按钮 —— 三样都靠左时,右半栏是一大片空白,读起来像没排过版。
-   居中之后这一段自己的重心落在栏中间,和它下面「相关节点」那种天然左对齐的列表
-   也不会混起来。`.sec-title` 跟着居中,否则标题会孤零零地挂在左上角。 */
-.sec-status { text-align: center; }
-.sec-status .sec-title { text-align: center; }
-.st-row { display: flex; align-items: center; justify-content: center;
+   **左对齐,与其余各段一致**(第八轮走查反馈改回来;设计稿 §17 那张右栏草图本来就是
+   左对齐的:进度条、「8 / 15」、「学习中」都钉在左边)。
+
+   曾经是居中的 —— 第二轮走查反馈的原话是「贴齐左边,不符合居中」,当时的判断是
+   「三样东西都靠左,右半栏是一大片空白,读起来像没排过版」。第八轮看下来那个判断是错的:
+   **整个右栏只有这一块是居中的** —— 上面是标题条 `.p-head` 与「系统建议点亮」那条
+   `.reason`,下面是按钮行 `.p-actions`、再往下是 `.scroll` 里的「概览」「相关节点」
+   「来源」,全都左对齐;夹在中间的一块居中排版反而像**没对齐**。而且居中之后,
+   芯片那一行与按钮的左边缘**互不重合**,谁都不挨着谁。
+
+   **它还得自己补一条内边距。** 除它以外的块,横向内边距要么来自自己(`.p-head` /
+   `.p-actions` / `.reason` 各自写 17px),要么来自容器(`.scroll` 的 `padding: 13px 17px`)。
+   而这一段是 `#panel` 的**直接子元素**、自己没写内边距(`views/inspector.js:560`,夹在
+   `.p-actions` 与 `.scroll` 之间)—— 于是它的内容(尤其是那个通栏按钮)**贴着左边那条
+   分隔线**,上下两块却都缩进了 17px。第八轮反馈里的「距离分隔线有一定的距离」就是这里:
+   补上和其余各块同宽的 17px,让这一纵列的左边缘落在同一条竖线上。
+   `tests/test_api.py` 拿 `.scroll` 的横向内边距去比,**这个数不许各写各的**。 */
+.sec-status { text-align: left; padding-left: 17px; padding-right: 17px; }
+.st-row { display: flex; align-items: center; justify-content: flex-start;
           gap: 8px; flex-wrap: wrap; margin-bottom: 9px; }
 .st-detail { font-size: 12.5px; color: var(--ink-2); }
 .st-detail b { color: var(--ink); }
-/* 「开始学习」/「继续学习」占满一行 —— 它是这一栏最主要的动作(设计稿 §18),
-   缩成一枚小按钮挤在别的按钮旁边,用户会以为它和「标记为已掌握」同级。 */
-.sec-status .btn { display: block; width: 100%; }
+/* 「开始学习」/「继续学习」是这一栏最主要的动作(设计稿 §18),所以**不缩到**与
+   「标记为已掌握」同级的那种小按钮;但它也不需要通栏 —— 左对齐之后,通栏的横条会明显
+   比上面那行(芯片 + 一句说明)还长出一截。取六成:右栏内容宽 266~306px,于是约 160~184px。 */
+.sec-status .btn { display: block; width: 60%; }
 
 /* ---- 提纲 ----
    一列**有顺序的小点**,每一条可点(点一下就着这一点提问)。条目本身只有 8~14 字

@@ -29,11 +29,18 @@
 降级链的产物是**立刻显示**在屏幕上的（线性章节路径），有总比没有好，用户看到提示
 还能重新生成；而提纲会被**永久写进用户自己的文件**，而 `notes.insert_outline` 从不
 覆写——写坏了没有第二次机会。所以这里不降级、不留占位、宁可让用户看到一次「重试」。
+
+「不留半成品」指的是**不留写坏的内容**（半句话、一条被截断的条目、来路不明的占位），
+不是「条数必须够」。第七轮加的 `salvage_json` 救回来的恰好是**完整的条目**，只是比
+要求的少几条（`clean_outline` 仍然照 `ITEM_LIMIT` / `MAX_ITEMS` 洗一遍）——那不是
+半成品，是「这份清单短了一点」，比一个字都没有有用。真正截断在条目中间的那一条会被
+救回过程整个丢掉，不会被写成半句话。
 """
 
 import re
 
-from knowledge_pilot.llm.json_utils import parse_json_object
+from knowledge_pilot.llm.json_utils import salvage_json
+from knowledge_pilot.llm.providers import THINKING_OFF
 
 # 提纲条数。少于 3 条不成清单（那是「要点」的粒度），超过 6 条用户不会读完。
 MAX_ITEMS = 6
@@ -50,6 +57,12 @@ ITEM_LIMIT = 30
 # 带进 prompt 的报告节选上限。报告可能几万字，而提纲只需要「这个知识点在这个主题
 # 里的语境」，不需要全文。
 EXCERPT_LIMIT = 1600
+
+# 输出预算（第七轮补上）。原来这次调用**没传 max_tokens**，走 provider 默认——而推理
+# 模型的 reasoning_content 与正文共用这份额度：实测推理 2571 字 / 正文 88 字，也就是
+# 说默认额度里九成以上花在了「想」上，而这里要的只是一份短清单。额度只卡输出、不预留，
+# 给宽是免费的保险。
+OUTLINE_MAX_TOKENS = 4096
 
 OUTLINE_PROMPT = (
     "你在为一个**完全不了解**某个知识点的人列一份提纲。\n"
@@ -86,6 +99,18 @@ async def generate_outline(
     """为一个知识点生成提纲。**永不抛异常**，失败返回 `[]`（= 什么都不写）。
 
     `llm is None` 也走同一条路——调用方不必先判断有没有模型。
+
+    第七轮两处改动，都是因为实测发现这一处比别处更脆：
+
+    - **补上 `max_tokens`**。原来压根没传，走 provider 默认。实测这次调用
+      **推理 2571 字 / 正文 88 字（29 倍）**——推理是答案的 29 倍，而额度是两边共用的，
+      越界就是正文为空、返回 `[]`、界面上表现为「这个节点没有提纲」。
+    - **关掉思考**（`THINKING_OFF`）。提纲是**结构化的短清单**，不是需要想很久的难题，
+      没有理由让推理去占那一半额度（这一处**没有**单独实测过关掉之后的效果；依据是
+      同类的抽取步骤实测 reasoning 由 19474 字降到 0、`finish_reason` 由 `length` 转 `stop`）。
+
+    解析用 `salvage_json`：条目是一条条写出来的，截断必然发生在**最后一条中间**，
+    救回前面完整的那些比整份丢掉有用（见模块 docstring「不留半成品」那段）。
     """
     if llm is None:
         return []
@@ -94,10 +119,15 @@ async def generate_outline(
         {"role": "user", "content": _context(node, topic_title=topic_title, report=report)},
     ]
     try:
-        raw = await llm.complete(prompt, response_format={"type": "json_object"})
+        raw = await llm.complete(
+            prompt,
+            response_format={"type": "json_object"},
+            max_tokens=OUTLINE_MAX_TOKENS,
+            extra_body=THINKING_OFF,
+        )
     except Exception:  # noqa: BLE001 — 模型/网络/格式任何一步失败都只是「这次没有提纲」
         return []
-    return clean_outline(parse_json_object(raw), max_items=max_items)
+    return clean_outline(salvage_json(raw), max_items=max_items)
 
 
 def clean_outline(parsed, *, max_items: int = MAX_ITEMS) -> list[str]:

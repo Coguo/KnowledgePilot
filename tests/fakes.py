@@ -30,10 +30,20 @@ class FakeChatClient:
         self.complete_script: list[str] = []
         self.complete_calls = 0
         self.seen_response_formats: list = []
+        # 第七轮：`extra_body`（provider 方言，如关掉推理模型的思考）与 `max_tokens`
+        # 一并记下来——它们是「抽取这一步有没有按预期关掉思考」的唯一可断言痕迹。
+        #
+        # 名字带 `complete_` 前缀是**必须的**：`FakeStreamingClient`（test_agent_streaming）
+        # 另有一个 `seen_max_tokens` 记**流式**那一路的 max_tokens。撞名时两条路径会往
+        # 同一个列表里追加，断言拿到的是一段谁也看不懂的混合序列。
+        self.seen_extra_bodies: list = []
+        self.seen_complete_max_tokens: list = []
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.seen_messages.append(list(messages))
         self.seen_response_formats.append(response_format)
+        self.seen_extra_bodies.append(extra_body)
+        self.seen_complete_max_tokens.append(max_tokens)
         if self.complete_script:
             idx = min(self.complete_calls, len(self.complete_script) - 1)
             self.complete_calls += 1

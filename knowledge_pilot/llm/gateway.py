@@ -85,21 +85,29 @@ class ModelGateway:
         *,
         max_tokens: int | None = None,
         response_format: dict | None = None,
+        extra_body: dict | None = None,
     ) -> str:
         """非流式补全：瞬时错退避重试 + 单 provider 耗尽可 fallback。
 
         非瞬时错误（400/401/403/404 等）立即上抛，语义与旧 `ChatClient` 一致——
         调用方的解析失败回退（planner 单步 / evaluate 充分 / KG 空 / judge rubric）在
         「成功返回但内容不合规」的分支触发，不受这里影响。
+
+        `extra_body` **只在非 None 时**才往 provider 递（`_open_stream_with_retries` 里
+        `max_tokens` 同形）：默认路径喂给假 provider 的参数与 Phase 8 逐字节一致。
         """
         last_exc: BaseException | None = None
         for i, provider in enumerate(self._providers):
             attempts = self._max_attempts if self._retry_enabled else 1
             for attempt in range(1, attempts + 1):
                 try:
-                    text, usage = await provider.complete(
-                        messages, max_tokens=max_tokens, response_format=response_format
-                    )
+                    call_kwargs: dict = {
+                        "max_tokens": max_tokens,
+                        "response_format": response_format,
+                    }
+                    if extra_body is not None:
+                        call_kwargs["extra_body"] = extra_body
+                    text, usage = await provider.complete(messages, **call_kwargs)
                     self._record_usage("complete", provider, usage)
                     return text
                 except Exception as exc:  # noqa: BLE001 — 分类决定是否重试

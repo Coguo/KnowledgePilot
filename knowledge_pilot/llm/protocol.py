@@ -41,10 +41,20 @@ class LLMClient(Protocol):
         *,
         max_tokens: int | None = None,
         response_format: dict | None = None,
+        extra_body: dict | None = None,
     ) -> str:
         """非流式补全：给定消息返回完整文本（Query Rewrite / Planner / Evaluate 用）。
 
         response_format 透传给 OpenAI 兼容接口（如 {"type": "json_object"}）。
+
+        `extra_body` 是 **provider 方言的逃生口**，原样合并进请求体（第七轮加入）。
+        它存在的原因是有些开关不在 OpenAI 兼容层的标准参数里——比如关掉推理模型的
+        thinking（见 `providers.py::THINKING_OFF`），而我们的 `max_tokens` 会被推理
+        和正文一起吃掉。方言常量定义在**说 SDK 那门语言的** `providers.py`，本协议
+        不必认识任何一个具体方言。
+
+        `None`（默认）→ 请求体里**一个字节都不多**：这条与 `max_tokens` 的既有约定
+        同形，是 `ModelGateway` ↔ `ChatClient` 逐字节 parity 铁律（B 轨测试）的前提。
         """
         ...
 

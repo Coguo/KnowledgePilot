@@ -324,17 +324,48 @@ async def test_panel_divider_is_one_line_on_the_column_edge():
     assert "border-left" not in _css_rule(inspector, "#panel", where="inspector.css")
 
 
-async def test_inspector_status_section_is_centered():
-    """右栏「学习状态」段是居中的（走查反馈 ②的后半句：「贴齐左边 不符合居中」）。
+async def test_inspector_status_section_reads_left_aligned_like_its_neighbours():
+    """右栏「学习状态」段**左对齐**（第八轮走查反馈，推翻了第二轮「不符合居中」那条）。
 
-    这一段只有一行状态徽标加一个按钮，左边齐平会让它读成「没写完的表单」。
-    居中写在 `.sec-status` 上（子项继承），按钮则铺满整段宽度。
+    第二轮把它改成居中，理由是「三样都靠左时右半栏是一大片空白」。第八轮的实际观感
+    相反：**整个右栏只有这一块是居中的**（上下都是左对齐的块），夹在中间反而像没对齐；
+    而且居中时芯片那一行与按钮的左边缘互不重合。设计稿 §17 那张右栏草图本来也是
+    左对齐的。左对齐后它们共用同一条左边距 —— 「距离分隔线有一定的距离」指的就是这条
+    边距，不是贴齐栏边。
+
+    按钮同时从通栏收到六成：左对齐之后，通栏的横条比上面那行（芯片 + 一句说明）长出一大截。
+
+    内边距那半条是这一轮真正的病根：其余各段住在 `.scroll`（`padding: 13px 17px`）里，
+    而这一段是 `#panel` 的直接子元素，拿不到那条边距 —— 内容（尤其是通栏按钮）直接
+    贴着左边那条分隔线。所以这里**不写死 17px**，而是拿 `.scroll` 的横向内边距去比：
+    两个数各写各的，就是下一次「和别的地方对不齐」。
     """
     async with await _client() as client:
         css = _strip_comments((await client.get("/static/css/inspector.css")).text, ".css")
     status = _css_rule(css, ".sec-status", where="inspector.css")
-    assert "text-align: center" in status, "「学习状态」段又贴齐左边了"
-    assert "width: 100%" in _css_rule(css, ".sec-status .btn", where="inspector.css")
+    gutter = re.search(r"padding:\s*[\d.]+px\s+([\d.]+)px",
+                       _css_rule(css, "#panel .scroll", where="inspector.css"))
+    assert gutter, "`.scroll` 的内边距不再是「上下 左右」两值简写了，这条比对失去前提"
+    for side in ("padding-left", "padding-right"):
+        assert _px(status, side) == float(gutter.group(1)), (
+            f"「学习状态」段的 {side} 与 `.scroll` 的横向内边距不同 —— "
+            "它不在 `.scroll` 里，不自己补上就会贴着分隔线"
+        )
+    assert "text-align: center" not in status, "「学习状态」段又居中回去了"
+    assert "text-align: left" in status, (
+        "左对齐要显式写出来 —— 只删掉居中那条会让它退回 body 的默认值，"
+        "读代码的人看不出这里是有意对齐的"
+    )
+    assert "justify-content: flex-start" in _css_rule(css, ".st-row", where="inspector.css"), (
+        "芯片那一行还在居中"
+    )
+    btn = _css_rule(css, ".sec-status .btn", where="inspector.css")
+    assert "width: 100%" not in btn, "「继续学习」又变回通栏了"
+    pct = re.search(r"width:\s*([\d.]+)%", btn)
+    assert pct, "按钮的宽度没有写成百分比 —— 右栏宽是 clamp(300px,23vw,340px)，写死 px 会跟着栏宽脱节"
+    assert 30 <= float(pct.group(1)) <= 80, (
+        f"宽度 {pct.group(1)}% 不在「比小按钮大、又不到通栏」这个区间里"
+    )
 
 
 def _css_rule(css: str, selector: str, *, where: str = "css") -> str:

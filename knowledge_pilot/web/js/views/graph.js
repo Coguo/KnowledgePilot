@@ -517,7 +517,8 @@
    * 构好之后顶栏最显眼的位置上留一个重生成按钮,等于每天都在邀请用户把那件事
    * 再做一遍 —— 而重跑会按新的 `order_index` 重算 `note_path`(`service.py:82`),
    * 用户写在正文里的「## 我的笔记」会留在磁盘上成孤儿,界面上再也看不到。
-   * 那个能力还在,但挪进设置页的「进阶」,和它的代价写在一起(见 `views/settings.js`)。
+   * 那个能力还在,但挪进设置页的「当前探索」卡(`#st-regen`),和它的代价写在一起
+   * (见 `views/settings.js`),不在这一屏的顶栏上。
    */
   function header(g, opts) {
     const topic = (g && g.topic) || {};
@@ -531,6 +532,39 @@
          ${layoutToggle(o.mode || null)}
        </div>
        ${filtersHTML(g, o.filters, mode)}`;
+  }
+
+  /**
+   * 「这张图不是抽出来的」提示(第七轮)。纯函数。
+   *
+   * 判据取的是**症状**而不是来源:图里**有节点**、且**每一个**节点的 `key_points`
+   * 都是空的。
+   *
+   * 为什么不写 `type === '章节'`:降级**有两条**路径(`path.nodes_from_headings`
+   * 按资料标题分章、`path.nodes_from_plan` 拿研究计划每步当节点),而它们填的类型
+   * 是同一个字符串。但那是拿**上游填的标签**当判据 —— `type` 在正常的抽取路径里
+   * 也是模型自己写的自由文本(抽取 prompt 里给的就是 `{"type":"技术"}`),它完全
+   * 可能给某个知识点写「章节」,那时这张**好好抽出来**的图会被打上「没抽过」的标签。
+   * 空关键词既是两条降级路径的共同产物,又是正常抽取几乎不会出现的形状,也正是用户
+   * 能一眼看出来的那个症状(每个知识点都只剩一句 summary)。
+   *
+   * 为什么要有这条提示:抽取失败时下游会**静默**降级成研究计划,产物看起来完全
+   * 像一张正常的图 —— 节点数、边数、`status=ready` 都对,生成日志一走就再没有
+   * 任何痕迹。用户因此以为「系统抽出来的东西就是这样」,而实际上抽取出过一次好答案、
+   * 只是在截断里被丢掉了(第七轮的 bug)。
+   */
+  function degradedHTML(g) {
+    const nodes = (g && g.nodes) || [];
+    // 空图不提示:那是另一件事(「还没生成」),空态与生成卡片各有各的说法。
+    if (!nodes.length) return '';
+    const empty = (n) => !(((n && n.key_points) || []).length);
+    if (!nodes.every(empty)) return '';
+    return `
+      <div class="notice">
+        每个知识点都没有关键词 —— 这张图是从资料的标题或研究计划直接生成的，
+        <b>没有经过知识点抽取</b>。点开它只能看到一句话的说明，没有可学的清单。
+        重新研究并生成可以再试一次：<b>设置页 →「当前探索」→「重新研究并生成」</b>（它下面写明了代价）。
+      </div>`;
   }
 
   // ---- 首次进入 / 全部点亮 两种遮罩(设计稿 §24 / §25) --------------------------
@@ -597,7 +631,7 @@
    *  遮罩也跟着偏,而它要盖住的是整个画布。 */
   function view(g, opts) {
     const o = opts || {};
-    return header(g, o) +
+    return header(g, o) + degradedHTML(g) +
       `<div class="canvas">
          <div id="graph-scroll"><div id="graph-fit">${svg(g, o)}</div></div>
          ${toolbarHTML()}
@@ -881,7 +915,7 @@
     // 纯函数(可在 Node 里直接断言)
     svg, header, view, hotEdges, generateOutcome, cardTopic, nodeParts, nodeClass,
     filtersHTML, toolbarHTML, ringGeom, centerRingHTML, overlayHTML,
-    welcomeHTML, completeHTML, overlayKindNow,
+    welcomeHTML, completeHTML, overlayKindNow, degradedHTML,
     // 生成阶段的模板(纯字符串):`generateCardHTML` 落右栏,`pendingHTML` 落中间列
     generateCardHTML, pendingHTML,
     // 落到 DOM 的那一层

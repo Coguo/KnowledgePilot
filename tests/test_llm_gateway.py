@@ -67,13 +67,18 @@ class FakeProvider:
         self.complete_calls = 0
         self.open_calls = 0
         self.last_include_usage = None
+        # 第七轮：网关有没有把 `extra_body` 透传到 provider。
+        self.last_extra_body = "（没调过）"
+        self.last_max_tokens = "（没调过）"
         # 每项：("ok", text, usage_or_None) 或 ("err", exc)；耗尽后默认返回 ("ok","ok",None)
         self._complete_outcomes = list(complete_outcomes or [])
         self._open_outcomes = list(open_outcomes or [])
         self._chunks = list(chunks or [])
 
-    async def complete(self, messages, *, max_tokens=None, response_format=None):
+    async def complete(self, messages, *, max_tokens=None, response_format=None, extra_body=None):
         self.complete_calls += 1
+        self.last_extra_body = extra_body
+        self.last_max_tokens = max_tokens
         outcome = self._complete_outcomes.pop(0) if self._complete_outcomes else ("ok", "ok", None)
         if outcome[0] == "err":
             raise outcome[1]
@@ -117,6 +122,40 @@ def test_complete_default_single_call_no_retry():
     gw = _gateway([p])
     assert _run(gw.complete([{"role": "user", "content": "hi"}])) == "答案"
     assert p.complete_calls == 1
+
+
+def test_complete_passes_extra_body_through_and_omits_it_when_none():
+    """网关是**透明**的：给了就透传，没给就一个字节都不给 provider（第七轮）。
+
+    后半句和 `max_tokens` 走同一条约定 —— provider 那一层据此判断「要不要把这个键
+    写进请求体」，所以「None」与「缺省」必须是同一个意思，不能靠 provider 自己兜。
+    """
+    from knowledge_pilot.llm.providers import THINKING_OFF
+
+    p = FakeProvider(complete_outcomes=[("ok", "a", None), ("ok", "b", None)])
+    gw = _gateway([p])
+    _run(gw.complete([{"role": "user", "content": "hi"}], extra_body=THINKING_OFF))
+    assert p.last_extra_body == THINKING_OFF
+
+    _run(gw.complete([{"role": "user", "content": "hi"}]))
+    assert p.last_extra_body is None, "没传时应当原样是 None，不能变成空字典"
+
+
+def test_complete_fallback_keeps_the_extra_body():
+    """降级到第二个 provider 时方言要跟着走 —— 两个 provider 收的是同一次调用。
+
+    漏掉这一条的话「关掉思考」在最需要它的那条路上（主 provider 挂了）会静默失效。
+    """
+    from knowledge_pilot.llm.providers import THINKING_OFF
+
+    p1 = FakeProvider(name="p1", complete_outcomes=[("err", _HttpStatusError(500))])
+    p2 = FakeProvider(name="p2", complete_outcomes=[("ok", "备用答案", None)])
+    # 重试关（默认）、fallback 开：primary 一次性失败即顺延下一家（同
+    # `test_complete_fallback_single_attempt_when_retry_disabled`）。
+    gw = _gateway([p1, p2])
+    assert _run(gw.complete([{"role": "user", "content": "hi"}],
+                            extra_body=THINKING_OFF)) == "备用答案"
+    assert p2.last_extra_body == THINKING_OFF
 
 
 def test_complete_transient_raises_when_retry_disabled():

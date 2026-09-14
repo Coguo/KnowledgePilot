@@ -40,7 +40,8 @@ from knowledge_pilot.agent.loop import run_research
 from knowledge_pilot.kg.extract import build_kg_context, extract_entities_relations
 from knowledge_pilot.kg.graph import GraphStore, match_query_entities
 from knowledge_pilot.llm.client import LLMClient
-from knowledge_pilot.llm.json_utils import parse_json_object
+from knowledge_pilot.llm.json_utils import parse_json_object, salvage_json
+from knowledge_pilot.llm.providers import THINKING_OFF
 from knowledge_pilot.llm.streaming import stream_text
 from knowledge_pilot.memory.context import build_memory_context
 from knowledge_pilot.memory.store import ResearchMemoryStore
@@ -55,8 +56,20 @@ KG_EVIDENCE_MAX_CHARS = 8000
 # 学习侧「抽取知识点」这一步的输出预算。**给得比 synthesize 的 4096 宽**：同一个
 # 推理模型（deepseek-flash 之类）的 reasoning_content 与正文**共用**这个预算，而
 # 预算被推理吃光时正文会是**空字符串且不报错**——4096 下实测推理就能吃掉 3000+。
-# 这条不是「多给点更保险」，是这类模型上「不给够就等于没有输出」。
-EXTRACT_MAX_TOKENS = 8192
+#
+# 第七轮 8192 → 16384，同时给这一步关掉思考（见 `_EXTRACT_EXTRA_BODY`）——**关思考
+# 才是修复，加宽只是保险**。上一版把「加宽」当成修复，方向是错的：8192 实测推理吃掉
+# 19474 字、正文只剩 1418 字且断在半句（`finish_reason=length`），因为**危险程度与
+# 「想了多久」成正比，而不是与「读了多少资料」成正比** —— 同一份 9275 字的 prompt
+# 有时想 19474 字、有时想 20369 字（那次正文 0 字），所以没法按输入长度估预算。
+# 关掉思考后同一次抽取只花 1293 个输出 token 就交回 12 个节点。留宽到 16384 是因为
+# **额度只卡输出、不预留**（多给的不会挤占输入），万一方言被某个 provider 拒了，
+# 这里还有余量撑住推理。
+EXTRACT_MAX_TOKENS = 16384
+
+# 「关掉思考」这个 provider 方言（第七轮）。它由 `llm/providers.py` 定义——agent 层
+# 只把它当**不透明字典**原样递下去，不需要认识任何一个具体方言。
+_EXTRACT_EXTRA_BODY = THINKING_OFF
 
 # 所有「输出 JSON」的 system prompt 必须包含单词 "json"：DeepSeek 的 json_object
 # 模式硬性要求 prompt 出现该词，否则返回 HTTP 400。
@@ -327,8 +340,14 @@ async def extract_node(
     预算调大。
 
     输入复用 `synthesize` 那一份（研究问题 + 研究计划 + 已收集资料），只是最后一步
-    从「写文章」换成「输出 JSON」：JSON 短得多，且同一份预算下的失败模式是
-    「抽得差」而不是「一个字都没有」。
+    从「写文章」换成「输出 JSON」：JSON 短得多。
+
+    **第六轮那句「失败模式从『一个字都没有』变成『抽得差』」是错的**（第七轮实测纠正）：
+    同样的预算下它照样会一个字都没有（一次真实抽取 reasoning 20369 字 / 正文 0 字），
+    或者更常见地**断在半句**（reasoning 19474 / 正文 1418 字，`finish_reason=length`）。
+    真正把这一步救回来的是**关掉思考**（`_EXTRACT_EXTRA_BODY`）——推理与正文共用
+    `max_tokens`，而抽取这一步不需要推理；关掉之后同一次抽取只花 1293 个输出 token。
+    `salvage_json` 只兜住「有正文但被截断」这一种，正文为空时它无从下手。
 
     与 synthesize 的两处刻意不同：
     - **不流式**。JSON 逐字吐给用户没有意义（他要点的是那张图），所以走 `complete`;
@@ -354,12 +373,18 @@ async def extract_node(
     ]
     try:
         raw = await llm.complete(
-            prompt, response_format={"type": "json_object"}, max_tokens=max_tokens
+            prompt,
+            response_format={"type": "json_object"},
+            max_tokens=max_tokens,
+            extra_body=_EXTRACT_EXTRA_BODY,
         )
     except Exception:  # noqa: BLE001 — 见 docstring：交不出节点由调用方降级
         raw = ""
 
-    parsed = parse_json_object(raw)
+    # `salvage_json` 而不是 `parse_json_object`：输出被推理挤到截断时，一份断在半句的 JSON
+    # 会一个节点都不剩（实测过：12 个知识点的好答案 → 0 个 → 下游降级成研究计划）。
+    # 它正常路径与 `parse_json_object` 逐字节一致，只在残缺时多救回已完整的那部分。
+    parsed = salvage_json(raw)
     nodes = parsed.get("nodes") if isinstance(parsed, dict) else None
     nodes = [n for n in nodes if isinstance(n, dict)] if isinstance(nodes, list) else []
     summary = str(parsed.get("summary") or "").strip() if isinstance(parsed, dict) else ""

@@ -146,6 +146,38 @@ export function emptyGraph() {
   return graph([], [], { title: '空主题', status: 'empty', total: 0, mastered: 0 });
 }
 
+/**
+ * **降级产物**:抽取失败时后端拿研究计划的每一步当节点(`learning/path.py` 的
+ * `nodes_from_plan`,以及 `nodes_from_headings` 那条同形状的路径)。
+ *
+ * 形状上它跟一张正常的图**一模一样** —— 节点数、边数、`status='ready'` 都对,
+ * 差别只在两处,而且两处都是「少东西」而不是「多东西」:每个节点的 `key_points`
+ * 是空的,`summary` 就是那一步的 purpose(研究问题式的句子,不是技术方法)。
+ *
+ * 这正是第七轮那个 bug 的样子:用户找「rerank 技术」,期待看到「交叉编码器重排」
+ * 这类具体方法,拿到的却是「有哪些主流实现方案」——而界面上没有任何东西提示他
+ * 这张图不是抽出来的。夹具照真实记录的字段抄,`type` 用降级路径会给的那个值。
+ */
+export function degraded() {
+  const names = [
+    '重排技术的主流方案有哪些',
+    '重排模型的训练数据从哪来',
+    '怎么评估重排的效果',
+    '重排的工程落地与延迟',
+  ];
+  const nodes = names.map((name, i) => node({
+    id: `p${i}`,
+    order_index: i,
+    depth: i === 0 ? 0 : 1,
+    name,
+    type: '章节',
+    summary: `研究这一步是为了搞清楚${name}。`,
+    key_points: [],
+  }));
+  const edges = names.slice(1).map((_, i) => ['p0', `p${i + 1}`]);
+  return graph(nodes, edges, { title: 'rerank 技术', total: names.length });
+}
+
 /** 单节点:1 个 depth-0 —— 单根时中心应当就是它本人。 */
 export function single() {
   return graph([node({ id: 'solo', order_index: 0, depth: 0, name: '唯一知识点' })], [], {

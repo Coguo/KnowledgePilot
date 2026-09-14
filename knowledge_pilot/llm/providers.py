@@ -11,6 +11,19 @@ from __future__ import annotations
 
 from typing import Any
 
+# provider 方言：关掉推理模型的 thinking（第七轮）。
+#
+# 为什么需要它：推理模型（`DEEPSEEK_MODEL=deepseek-flash` 这类）的 `reasoning_content`
+# 与正文**共用同一个 `max_tokens`**。实测一次真实的知识点抽取：8192 的额度里推理吃掉
+# 19474 字、正文只剩 1418 字且被截断在半句（`finish_reason=length`）——一个节点都没解析
+# 出来。同一份输入、同一个 prompt，加上这个开关后 reasoning 为 0、正文 3386 字、
+# `finish_reason=stop`、12 个节点全部解析成功。
+#
+# 放在这里而不是 `protocol.py`：它是**某一个 provider 的方言**，只有说 SDK 那门语言的
+# 这一层该认识它。上层（`agent/graph.py` / `learning/outline.py`）只把它当不透明字典传下来。
+THINKING_OFF: dict[str, Any] = {"thinking": {"type": "disabled"}}
+
+
 # 进程级共享 AsyncOpenAI：同一 (base_url, api_key, timeout, max_retries) 只建一次
 # （AsyncOpenAI 线程安全、内部复用连接）。注入 http_client 的实例不入共享缓存。
 _client_cache: dict[tuple, Any] = {}
@@ -102,15 +115,23 @@ class ProviderClient:
         *,
         max_tokens: int | None = None,
         response_format: dict | None = None,
+        extra_body: dict | None = None,
     ) -> tuple[str, Any]:
-        """非流式补全：返回 (完整文本, usage 对象或 None)。"""
+        """非流式补全：返回 (完整文本, usage 对象或 None)。
+
+        `extra_body` **仅非 None 时**才写进 body（`max_tokens` 同一条约定）：默认路径
+        的外发 JSON 因此逐字节不变，B 轨 parity 铁律照旧成立。
+        """
         client = self._ensure_client()
-        resp = await client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=max_tokens,
-            response_format=response_format,
-        )
+        kwargs: dict = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "response_format": response_format,
+        }
+        if extra_body is not None:
+            kwargs["extra_body"] = extra_body
+        resp = await client.chat.completions.create(**kwargs)
         content = resp.choices[0].message.content or ""
         usage = getattr(resp, "usage", None)
         return content, usage
